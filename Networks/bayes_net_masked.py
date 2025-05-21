@@ -209,7 +209,8 @@ class BayesNetMasked:
                             lr=1e-2, batch_size=32,
                             epsilon=1e-10, mdecay=0.05,
                             print_every_n_samples=10,
-                            resample_prior_every=1000):
+                            resample_prior_every=1000,
+                            prevent_overfitting = None):
         """
         Use multiple chains of sampling.
 
@@ -248,7 +249,8 @@ class BayesNetMasked:
                        lr, batch_size, epsilon, mdecay,
                        print_every_n_samples, continue_training=False,
                        clear_sampled_weights=False,
-                       resample_prior_every=resample_prior_every)
+                       resample_prior_every=resample_prior_every,
+                       prevent_overfitting= prevent_overfitting)
             if self.task == "classification":
                 self._save_sampled_weights()
                 self.sampled_weights.clear()
@@ -259,7 +261,7 @@ class BayesNetMasked:
               num_burn_in_steps=3000, lr=1e-2, batch_size=32, epsilon=1e-10,
               mdecay=0.05, print_every_n_samples=10, continue_training=False,
               clear_sampled_weights=True, resample_prior_every=1000,
-              resample_hyper_prior_burn_in=True):
+              resample_hyper_prior_burn_in=True, prevent_overfitting = None):
         """
         Train a BNN using a given dataset.
 
@@ -344,21 +346,47 @@ class BayesNetMasked:
             loss = self._neg_log_joint(fx_batch, y_batch, num_datapoints)
             output = self.net(x_batch)
             if self.net.task == "regression":
-                det_loss_fn = nn.MSELoss()
-                det_loss = det_loss_fn(output, y_batch)
+                    det_loss_fn = nn.MSELoss()
+                    det_loss = det_loss_fn(output, y_batch)
             else:
-                det_loss_fn = nn.CrossEntropyLoss()
-                det_loss = det_loss_fn(output, y_batch)
+                    det_loss_fn = nn.CrossEntropyLoss()
+                    det_loss = det_loss_fn(output, y_batch)
             # Estimate the gradients
             loss.backward(retain_graph = True)
             torch.nn.utils.clip_grad_norm_(self.net.parameters(), 100.)
 
             # Update parameters
             self.sampler.step()
-            self.net.change_hook(True)
-            det_loss.backward(retain_graph = True)
-            deterministic_optimizer.step()
-            self.net.change_hook(False)
+            if prevent_overfitting == "Dropout":
+                # Use dropout with probability of 0.5
+                self.net.change_hook(True, dropout = True)
+                det_loss.backward(retain_graph = True)
+                deterministic_optimizer.step()
+                self.net.change_hook(False)
+            elif prevent_overfitting == "Early Stopping":
+                if step <= num_steps//3:
+                    self.net.change_hook(True)
+                    det_loss.backward(retain_graph = True)
+                    deterministic_optimizer.step()
+                    self.net.change_hook(False)
+            # elif prevent_overfitting == "WCP":
+            #     # WCP with \mathcal{N}(0,0) as base model
+            #     self.net.change_hook(True)
+            #     det_loss.backward(retain_graph = True)
+            #     self.net.change_hook_wcp()
+            #     deterministic_optimizer.step()
+            #     self.net.change_hook(False)
+            elif prevent_overfitting == "Super early stopping":
+                 if step <= 100:
+                    self.net.change_hook(True)
+                    det_loss.backward(retain_graph = True)
+                    deterministic_optimizer.step()
+                    self.net.change_hook(False)
+            else: # Nothing to prevent from overfitting
+                self.net.change_hook(True)
+                det_loss.backward(retain_graph = True)
+                deterministic_optimizer.step()
+                self.net.change_hook(False)
             self.step += 1
 
             # Resample hyper-parameters of the prior

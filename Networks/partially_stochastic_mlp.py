@@ -50,7 +50,7 @@ class PSMLP(nn.Module):
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32)
         X = X.view(-1, self.input_dim)
-
+        X = X.to(next(self.parameters()).device)
         for linear_layer, norm_layer in zip(list(self.layers),
                                             list(self.norm_layers)):
             X = self.activation_fn(norm_layer(linear_layer(X)))
@@ -81,6 +81,7 @@ class PSMLP(nn.Module):
         if not isinstance(X, torch.Tensor):
             X = torch.tensor(X, dtype=torch.float32)
         X = X.view(-1, self.input_dim)
+        X = X.to(next(self.parameters()).device)
         for linear_layer, norm_layer in zip(list(self.layers),
                                             list(self.norm_layers)):
             if isinstance(linear_layer, PartiallyStochasticLinearNP):    

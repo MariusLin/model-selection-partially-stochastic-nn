@@ -6,7 +6,7 @@ import torch.nn.init as init
 
 
 class Linear(nn.Module):
-    def __init__(self, n_in, n_out, scaled_variance=True):
+    def __init__(self, n_in, n_out, scaled_variance=True, device = "cpu"):
         """Initialization.
 
         Args:
@@ -14,14 +14,14 @@ class Linear(nn.Module):
             n_out: int, the size of the output.
         """
         super(Linear, self).__init__()
-
+        self.device = device
         self.n_in = n_in
         self.n_out = n_out
         self.scaled_variance = scaled_variance
 
         # Initialize the parameters
-        self.W = nn.Parameter(torch.zeros(self.n_in, self.n_out), True)
-        self.b = nn.Parameter(torch.zeros(self.n_out), True)
+        self.W = nn.Parameter(torch.zeros(self.n_in, self.n_out), True).to(self.device)
+        self.b = nn.Parameter(torch.zeros(self.n_out), True).to(self.device)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -59,6 +59,7 @@ class Linear(nn.Module):
             torch.tensor, [n_samples, batch_size, output_dim], the output data.
         """
         X = X.float()
+        X = X.to(self.device)
         Ws = self.W.repeat(n_samples, 1, 1)
         bs = self.b.repeat(n_samples, 1, 1)
 

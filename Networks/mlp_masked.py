@@ -18,7 +18,7 @@ def init_norm_layer(input_dim, norm_layer):
 
 class MLPMasked(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims, activation_fn, weight_masks, bias_masks,
-                 scaled_variance=True, norm_layer=None, det_training = True, task="regression"):
+                 scaled_variance=True, norm_layer=None, det_training = True, task="regression", device = "cpu"):
         """Initialization.
 
         Args:
@@ -43,6 +43,7 @@ class MLPMasked(nn.Module):
         self.weight_masks = weight_masks
         self.bias_masks = bias_masks
         self.det_training = det_training
+        self.device = device
 
         # Setup activation function
         options = {'cos': torch.cos, 'tanh': torch.tanh, 'relu': F.relu,
@@ -55,18 +56,19 @@ class MLPMasked(nn.Module):
             self.activation_fn = activation_fn
 
         self.layers = nn.ModuleList([MaskedLinear(
-            input_dim, hidden_dims[0], self.bias_masks[0], self.weight_masks[0][0], self.det_training, scaled_variance=scaled_variance)])
+            input_dim, hidden_dims[0], self.bias_masks[0], self.weight_masks[0][0], 
+            self.det_training, scaled_variance=scaled_variance, device = self.device)])
         self.norm_layers = nn.ModuleList([init_norm_layer(
             hidden_dims[0], self.norm_layer)])
         for i in range(1, len(hidden_dims)-1):
             self.layers.add_module(
                 "linear_{}".format(i), MaskedLinear(hidden_dims[i-1], hidden_dims[i], self.bias_masks[i],
-                self.weight_masks[i][0], self.det_training, scaled_variance=scaled_variance))
+                self.weight_masks[i][0], self.det_training, scaled_variance=scaled_variance, device=self.device))
             self.norm_layers.add_module(
                 "norm_{}".format(i), init_norm_layer(hidden_dims[i],
                                                      self.norm_layer))
         self.output_layer = Linear(hidden_dims[-1], output_dim,
-                                   scaled_variance=scaled_variance)
+                                   scaled_variance=scaled_variance, device = self.device)
 
     def reset_parameters(self):
         for m in self.modules():
@@ -115,9 +117,13 @@ class MLPMasked(nn.Module):
         else:
             return self.forward(X, log_softmax=False)
 
-    def change_hook(self, det_training):
+    def change_hook(self, det_training, dropout = False, p =0.5):
         for layer in self.layers:
-            layer.change_hook(det_training)
+            layer.change_hook(det_training, dropout, p)
+
+    def change_hook_wcp(self):
+        for layer in self.layers:
+            layer.change_hook_wcp()
 
 
     def sample_functions(self, X, n_samples):

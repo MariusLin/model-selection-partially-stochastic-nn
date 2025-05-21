@@ -18,7 +18,7 @@ def init_norm_layer(input_dim, norm_layer):
 
 class FactorizedGaussianMLPReparameterization(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims, activation_fn, D,
-                 W_std=None, b_std=None, scaled_variance=True, norm_layer=None):
+                 W_std=None, b_std=None, scaled_variance=True, norm_layer=None, device = "cpu"):
         """Initialization.
 
         Args:
@@ -40,7 +40,7 @@ class FactorizedGaussianMLPReparameterization(nn.Module):
         self.hidden_dims = hidden_dims
         self.norm_layer = norm_layer
         self.D = D
-
+        self.device = device
         # Setup activation function
         options = {'cos': torch.cos, 'tanh': torch.tanh, 'relu': F.relu,
                    'softplus': F.softplus, 'rbf': rbf, 'linear': linear,
@@ -57,7 +57,7 @@ class FactorizedGaussianMLPReparameterization(nn.Module):
         # Initialize layers
         self.layers = nn.ModuleList([FactorizedGaussianLinearReparameterization(
             input_dim, hidden_dims[0], self.D, W_std, b_std,
-            scaled_variance=scaled_variance, prior_per="parameter")])
+            scaled_variance=scaled_variance, prior_per="parameter", device = self.device)])
 
         self.norm_layers = nn.ModuleList([init_norm_layer(
             hidden_dims[0], self.norm_layer)])
@@ -65,7 +65,7 @@ class FactorizedGaussianMLPReparameterization(nn.Module):
             self.layers.add_module(
                 "linear_{}".format(i), FactorizedGaussianLinearReparameterization(
                     hidden_dims[i-1], hidden_dims[i], self.D, W_std, b_std,
-                    scaled_variance=scaled_variance, prior_per="parameter"))
+                    scaled_variance=scaled_variance, prior_per="parameter", device=self.device))
             self.norm_layers.add_module(
                 "norm_{}".format(i), init_norm_layer(hidden_dims[i],
                                                      self.norm_layer))
@@ -133,3 +133,9 @@ class FactorizedGaussianMLPReparameterization(nn.Module):
             det_mask_bias.append(layer.get_b_std_mask())
 
         return det_mask_weights , det_mask_bias
+    
+
+    def to(self, device):
+        self.device = torch.device(device)
+        super().to(device)
+        return self 

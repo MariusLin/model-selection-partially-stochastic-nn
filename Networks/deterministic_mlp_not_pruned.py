@@ -92,12 +92,8 @@ class DetMLPNP(nn.Module):
             if ind in stoch_layer_inds:
                 layers[ind] = layers[ind].convert_to_partially_stochastic(pruned, pos_stochasticity, num_stochastic)
             else:
-               b = layer.bias.data
-               w = layer.weights.data
-               del layers[ind].bias
-               layers[ind].bias = b
-               del layers[ind].weights
-               layers[ind].weights = w
+               layers[ind].bias.requires_grad_(False)
+               layers[ind].weights.requires_grad_(False)
         if pruned:
             for ind, layer in enumerate(layers):
                 if num_stochastic <= 0:
@@ -107,12 +103,8 @@ class DetMLPNP(nn.Module):
                     layers[ind] = layers[ind].convert_to_partially_stochastic(pruned, pos_stochasticity, min(num_pruned, num_stochastic))
                 num_stochastic -= num_pruned
         output_layer = copy.deepcopy(self.output_layer)
-        b_o = output_layer.bias.data
-        w_o = output_layer.weights.data
-        del output_layer.bias
-        del output_layer.weights
-        output_layer.bias =b_o
-        output_layer.weights = w_o
+        output_layer.bias.requires_grad_(False)
+        output_layer.weights.requires_grad_(False)
                     
 
         return PSMLP(self.input_dim, layers, output_layer, self.norm_layers, self.activation_fn, self.task, norm_layer = self.norm_layer)

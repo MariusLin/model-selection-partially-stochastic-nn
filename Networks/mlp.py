@@ -18,7 +18,7 @@ def init_norm_layer(input_dim, norm_layer):
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims, activation_fn,
                  scaled_variance=True, norm_layer=None,
-                 task="regression"):
+                 task="regression",  device = "cpu"):
         """Initialization.
 
         Args:
@@ -40,6 +40,7 @@ class MLP(nn.Module):
         self.hidden_dims = hidden_dims
         self.norm_layer = norm_layer
         self.task = task
+        self.device = device
 
         # Setup activation function
         options = {'cos': torch.cos, 'tanh': torch.tanh, 'relu': F.relu,
@@ -52,18 +53,18 @@ class MLP(nn.Module):
             self.activation_fn = activation_fn
 
         self.layers = nn.ModuleList([Linear(
-            input_dim, hidden_dims[0], scaled_variance=scaled_variance)])
+            input_dim, hidden_dims[0], scaled_variance=scaled_variance, device= self.device)])
         self.norm_layers = nn.ModuleList([init_norm_layer(
             hidden_dims[0], self.norm_layer)])
         for i in range(1, len(hidden_dims)):
             self.layers.add_module(
                 "linear_{}".format(i), Linear(hidden_dims[i-1], hidden_dims[i],
-                scaled_variance=scaled_variance))
+                scaled_variance=scaled_variance, device=self.device))
             self.norm_layers.add_module(
                 "norm_{}".format(i), init_norm_layer(hidden_dims[i],
                                                      self.norm_layer))
         self.output_layer = Linear(hidden_dims[-1], output_dim,
-                                   scaled_variance=scaled_variance)
+                                   scaled_variance=scaled_variance, device=self.device)
 
     def reset_parameters(self):
         for m in self.modules():
@@ -82,7 +83,7 @@ class MLP(nn.Module):
             torch.tensor, [batch_size, output_dim], the output data.
         """
         X = X.view(-1, self.input_dim)
-
+        X = X.to(self.device)
         for linear_layer, norm_layer in zip(list(self.layers),
                                             list(self.norm_layers)):
             X = self.activation_fn(norm_layer(linear_layer(X)))

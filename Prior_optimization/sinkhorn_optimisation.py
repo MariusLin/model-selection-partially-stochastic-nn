@@ -6,11 +6,17 @@ import os
 
 
 class SinkhornMapper():
-    def __init__(self, out_dir):
+    def __init__(self, out_dir, device = "cpu"):
         self.out_dir = out_dir
         # Setup checkpoint directory
         self.ckpt_dir = os.path.join(self.out_dir, "ckpts")
         ensure_dir(self.ckpt_dir)
+        self.device = device
+
+
+    def to(self, device):
+        self.device = torch.device(device)
+        return self 
 
 
     def calculate (self, nnet_samples, gp_samples, blur):
@@ -22,7 +28,7 @@ class SinkhornMapper():
 
 
     def optimize_sparse(self, net, gp, data_generator, n_data, num_iters, output_dim, D, lambd, X_train, y_train,
-                n_samples=128, lr=1e-1, print_every=10, device="cpu", gpu_gp = True, save_ckpt_every = 50):
+                n_samples=128, lr=1e-1, print_every=10, gpu_gp = True, save_ckpt_every = 50):
         
         sdist_hist = np.array([])
         pruned_hist = np.array([])
@@ -43,22 +49,22 @@ class SinkhornMapper():
         for it in range(1, num_iters+1):  
             # Draw X
             X = data_generator.get(n_data)
-            X = X.to(device)
+            X = X.to(self.device)
             if not gpu_gp:
                 X = X.to("cpu")
 
             # Draw functions from Gaussian Process
             gp_samples = gp.sample_functions(
-                        X.double(), n_samples).detach().float().to(device)
+                        X.double(), n_samples).detach().float().to(self.device)
             if output_dim > 1:
                 gp_samples = gp_samples.squeeze()
 
             if not gpu_gp:
-                X = X.to(device)
+                X = X.to(self.device)
 
             # Draw functions from Neural Network
             nnet_samples = net.sample_functions(
-                        X, n_samples).float().to(device)
+                        X, n_samples).float().to(self.device)
             if output_dim > 1:
                 nnet_samples = nnet_samples.squeeze()
 
@@ -96,7 +102,7 @@ class SinkhornMapper():
     
 
     def optimize_not_sparse(self, net, gp, data_generator, n_data, num_iters, output_dim, X_train, y_train, 
-                    n_samples=128, lr=1e-1, print_every=10, device="cpu", gpu_gp = True, save_ckpt_every = 50):
+                    n_samples=128, lr=1e-1, print_every=10, gpu_gp = True, save_ckpt_every = 50):
         
         sdist_hist = np.array([])
         y_train_shape = y_train.shape
@@ -107,22 +113,22 @@ class SinkhornMapper():
         for it in range(1, num_iters+1):  
             # Draw X
             X = data_generator.get(n_data)
-            X = X.to(device)
+            X = X.to(self.device)
             if not gpu_gp:
                 X = X.to("cpu")
 
             # Draw functions from Gaussian Process
             gp_samples = gp.sample_functions(
-                        X.double(), n_samples).detach().float().to(device)
+                        X.double(), n_samples).detach().float().to(self.device)
             if output_dim > 1:
                 gp_samples = gp_samples.squeeze()
 
             if not gpu_gp:
-                X = X.to(device)
+                X = X.to(self.device)
 
             # Draw functions from Neural Network
             nnet_samples = net.sample_functions(
-                        X, n_samples).float().to(device)
+                        X, n_samples).float().to(self.device)
             if output_dim > 1:
                 nnet_samples = nnet_samples.squeeze()
 

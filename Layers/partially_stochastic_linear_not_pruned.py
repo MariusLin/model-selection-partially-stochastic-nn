@@ -17,8 +17,8 @@ class PartiallyStochasticLinearNP(nn.Module):
         self.scaled_variance = scaled_variance
 
         # Save full weight matrix and bias
-        self.weights = weight.clone()
-        self.bias = bias.data.clone().detach()
+        self.register_buffer("weights", weight.clone())
+        self.register_buffer("bias", bias.data.clone().detach())
         # Select stochastic indices
         self.stochastic_indices = []
         count = 0
@@ -58,37 +58,51 @@ class PartiallyStochasticLinearNP(nn.Module):
                     self.stochastic_indices.append((j,i))
 
         # Parameters for stochastic weights
-        self.initial_mu = torch.tensor(
-            [self.weights[i, j] for (i, j) in self.stochastic_indices], dtype=torch.float32)
-        self.initial_std = torch.ones_like(self.initial_mu, dtype=torch.float32) * init_std
-        self.stochastic_mu = nn.Parameter(self.initial_mu, requires_grad= True)
+        self.initial_mu = nn.Parameter(torch.tensor(
+            [self.weights[i, j] for (i, j) in self.stochastic_indices], dtype=torch.float32), requires_grad=False)
+        self.initial_std = nn.Parameter(torch.full_like(self.initial_mu, fill_value=init_std, dtype=torch.float32),
+                                        requires_grad=False)
+        self.stochastic_mu = nn.Parameter(self.initial_mu, requires_grad=True)
         self.stochastic_std = nn.Parameter(self.initial_std, requires_grad=True)
-        self.initial_samples = self.stochastic_mu + torch.rand_like(self.stochastic_mu)*self.stochastic_std
+        self.initial_samples = self.stochastic_mu + torch.rand_like(self.stochastic_mu) * self.stochastic_std
         self.stochastic_weights = self.initial_samples
-        self.weights_test =  self.weights.clone()
+        self.weights_test = self.weights.clone()
         for sampled_value, (i, j) in zip(self.stochastic_weights, self.stochastic_indices):
             self.weights_test[i, j] = sampled_value
         
 
     def forward(self, input):
-        # Start with a copy of the deterministic weights
-        weights = self.weights.clone()
-        # Sample stochastic values
-        sampled_values = self.stochastic_weights
-        # Insert sampled stochastic weights into the weight matrix
-        for sampled_value, (i, j) in zip(sampled_values, self.stochastic_indices):
-            weights[i, j] = sampled_value
-        if self.scaled_variance:
-            weights = weights / math.sqrt(self.in_features)
-        return torch.matmul(input, weights) + self.bias
+            # Ensure all tensors are on the same device as the input
+            device = input.device
+            weights = self.weights.to(device)
+            bias = self.bias.to(device)
+            stochastic_weights = self.stochastic_weights.to(device)
+
+            # Start with a copy of the deterministic weights
+            weights = weights.clone()
+            # Sample stochastic values
+            sampled_values = stochastic_weights
+            # Insert sampled stochastic weights into the weight matrix
+            for sampled_value, (i, j) in zip(sampled_values, self.stochastic_indices):
+                weights[i, j] = sampled_value
+            if self.scaled_variance:
+                weights = weights / math.sqrt(self.in_features)
+            return torch.matmul(input, weights) + bias
 
     def predict(self, input, sampled_weights):
-        weights = self.weights.clone()
+        # Ensure all tensors are on the same device as the input
+        device = input.device
+        weights = self.weights.to(device)
+        bias = self.bias.to(device)
+        sampled_weights = sampled_weights.to(device)
+
+        weights = weights.clone()
         for sampled_weight, (i, j) in zip(sampled_weights, self.stochastic_indices):
             weights[i, j] = sampled_weight
         if self.scaled_variance:
             weights = weights / math.sqrt(self.in_features)
-        return torch.matmul(input, weights) + self.bias
+        return torch.matmul(input, weights) + bias
+
     
     def sample_predict(self, X, n_samples):
         """Makes predictions using a set of sampled weights.
@@ -101,13 +115,15 @@ class PartiallyStochasticLinearNP(nn.Module):
             torch.tensor, [n_samples, batch_size, output_dim], the output data.
         """
         X = X.float()
+        device = X.device
+
         # Create n_samples copies of the base weights
-        Ws = self.weights.unsqueeze(0).repeat(n_samples, 1, 1)
+        Ws = self.weights.unsqueeze(0).repeat(n_samples, 1, 1).to(device)
         # Sample different stochastic weights for each sample
-        sampled_weights = self.stochastic_mu + torch.rand(
+        sampled_weights = self.stochastic_mu.to(device) + torch.rand(
             (n_samples, *self.stochastic_mu.shape),
-            device=self.stochastic_mu.device
-        ) * self.stochastic_std
+            device=device
+        ) * self.stochastic_std.to(device)
         # Replace the entries at stochastic_indices for each sample
         for i in range(n_samples):
             for ind, index in enumerate(self.stochastic_indices):
@@ -118,9 +134,8 @@ class PartiallyStochasticLinearNP(nn.Module):
             Ws = Ws / math.sqrt(self.in_features)
 
         # Expand bias for each sample
-        bs = self.bias.unsqueeze(0).repeat(n_samples, 1, 1)
+        bs = self.bias.unsqueeze(0).repeat(n_samples, 1, 1).to(device)
         return torch.matmul(X, Ws) + bs
-        
 
     def reset_parameters(self):
         if not self.scaled_variance:
