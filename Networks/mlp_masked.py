@@ -121,9 +121,9 @@ class MLPMasked(nn.Module):
         for layer in self.layers:
             layer.change_hook(det_training, dropout, p)
 
-    def change_hook_wcp(self):
+    def change_hook_wcp(self, step, num_steps):
         for layer in self.layers:
-            layer.change_hook_wcp()
+            layer.change_hook_wcp(step, num_steps)
 
 
     def sample_functions(self, X, n_samples):

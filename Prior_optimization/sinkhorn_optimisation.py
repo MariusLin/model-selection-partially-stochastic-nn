@@ -70,7 +70,7 @@ class SinkhornMapper():
 
             prior_optimizer.zero_grad()
             reg_loss_vector = (1 / D) * torch.tensor([torch.sum(omega_params_per_layer ** 2) \
-                                                        for omega_params_per_layer in omega_params])
+                                                        for omega_params_per_layer in omega_params]).to(self.device)
             regularization = torch.matmul(lambd, reg_loss_vector)
             # Compute blur for Sinkhorn Distance
             t = (10-0.001*num_iters)/(1- num_iters)

@@ -330,27 +330,28 @@ class BayesNetMasked:
         self.net.train()
         n_samples = 0 # used to discard first samples
         for step, (x_batch, y_batch) in batch_generator:
-            x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
+            x_batch = x_batch.to(self.device, non_blocking=True)
+            y_batch = y_batch.to(self.device, non_blocking=True)
+
             if self.task == "regression":
                 x_batch = x_batch.view(y_batch.shape[0], -1)
                 y_batch = y_batch.view(-1, 1)
-
-            # Forward pass
-            if self.task == "regression":
-                fx_batch = self.net(x_batch).view(-1, 1)
-            elif self.task == "classification":
-                fx_batch = self.net(x_batch, log_softmax=True)
-
             self.sampler.zero_grad()
-            # Calculate the negative log joint density
-            loss = self._neg_log_joint(fx_batch, y_batch, num_datapoints)
-            output = self.net(x_batch)
-            if self.net.task == "regression":
-                    det_loss_fn = nn.MSELoss()
-                    det_loss = det_loss_fn(output, y_batch)
-            else:
-                    det_loss_fn = nn.CrossEntropyLoss()
-                    det_loss = det_loss_fn(output, y_batch)
+            deterministic_optimizer.zero_grad()
+            with torch.autocast(device_type=self.device.type if self.device.type in ['cuda', 'cpu'] else 'cpu'):
+                # Forward pass
+                if self.task == "regression":
+                    fx_batch = self.net(x_batch).view(-1, 1)
+                    if prevent_overfitting != "Early Stopping" and step <= 100:
+                        det_loss_fn = nn.MSELoss()
+                        det_loss = det_loss_fn(fx_batch, y_batch)
+                elif self.task == "classification":
+                    fx_batch = self.net(x_batch, log_softmax=True)
+                    if prevent_overfitting != "Early Stopping" and step <= 100:
+                        det_loss_fn = nn.CrossEntropyLoss()
+                        det_loss = det_loss_fn(fx_batch, y_batch)
+                # Calculate the negative log joint density
+                loss = self._neg_log_joint(fx_batch, y_batch, num_datapoints)
             # Estimate the gradients
             loss.backward(retain_graph = True)
             torch.nn.utils.clip_grad_norm_(self.net.parameters(), 100.)
@@ -364,24 +365,18 @@ class BayesNetMasked:
                 deterministic_optimizer.step()
                 self.net.change_hook(False)
             elif prevent_overfitting == "Early Stopping":
-                if step <= num_steps//3:
+                if step <= 100:
                     self.net.change_hook(True)
                     det_loss.backward(retain_graph = True)
                     deterministic_optimizer.step()
                     self.net.change_hook(False)
-            # elif prevent_overfitting == "WCP":
-            #     # WCP with \mathcal{N}(0,0) as base model
-            #     self.net.change_hook(True)
-            #     det_loss.backward(retain_graph = True)
-            #     self.net.change_hook_wcp()
-            #     deterministic_optimizer.step()
-            #     self.net.change_hook(False)
-            elif prevent_overfitting == "Super early stopping":
-                 if step <= 100:
-                    self.net.change_hook(True)
-                    det_loss.backward(retain_graph = True)
-                    deterministic_optimizer.step()
-                    self.net.change_hook(False)
+            elif prevent_overfitting == "WCP":
+                # WCP with \mathcal{N}(0,0) as base model
+                self.net.change_hook(True)
+                det_loss.backward(retain_graph = True)
+                self.net.change_hook_wcp(step, num_steps)
+                deterministic_optimizer.step()
+                self.net.change_hook(False)
             else: # Nothing to prevent from overfitting
                 self.net.change_hook(True)
                 det_loss.backward(retain_graph = True)
