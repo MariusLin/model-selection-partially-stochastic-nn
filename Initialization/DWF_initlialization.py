@@ -16,26 +16,31 @@ def dwf_initialization(layer_sizes, sigma_w_list, D, epsilon, device='cpu'):
     Returns:
     - omega: List[torch.Tensor], each is (n_l, D) tensor for layer l
     """
-    L = len(layer_sizes)
     omega = []
-    for l in range(L):
-        n_l = layer_sizes[l]
-        sigma_w = sigma_w_list[l]
+    for l, (n_l, sigma_w) in enumerate(zip(layer_sizes, sigma_w_list)):
         sigma_l = sigma_w ** (1.0 / D)
         omega_min = epsilon ** (1.0 / D)
         omega_max = min(1.0, (2 * sigma_w) ** (1.0 / D))
 
-        # Prepare tensor to hold factors: shape (n_l, D)
+        # Initialize empty tensor
         omega_l = torch.empty((n_l, D), device=device)
 
-        for j in range(n_l):
-            for d in range(D):
-                # Rejection sampling for valid omega
-                while True:
-                    sample = torch.randn(1, device=device) * sigma_l
-                    if omega_min < torch.abs(sample) < omega_max:
-                        omega_l[j, d] = sample
-                        break
+        for d in range(D):
+            count = 0
+            # Rejection sampling for each column
+            while count < n_l:
+                # Generate a batch of candidate samples
+                batch_size = 2 * (n_l - count)  # over-generate to improve efficiency
+                samples = torch.randn(batch_size, device=device) * sigma_l
+                mask = (torch.abs(samples) > omega_min) & (torch.abs(samples) < omega_max)
+                valid_samples = samples[mask]
+
+                # Fill in as many valid samples as possible
+                num_valid = valid_samples.size(0)
+                num_to_fill = min(num_valid, n_l - count)
+                if num_to_fill > 0:
+                    omega_l[count:count+num_to_fill, d] = valid_samples[:num_to_fill]
+                    count += num_to_fill
 
         omega.append(omega_l)
 

@@ -17,23 +17,23 @@ class MaskedLinear(nn.Module):
         self.n_out = n_out
         self.scaled_variance = scaled_variance
         self.W_det_mask = W_det_mask.to(self.device)
-        self.b_det_mask = b_det_mask.top(self.device)
+        self.b_det_mask = b_det_mask.to(self.device)
         self.det_training = det_training
         # Register the masks and perform masking
         self.register_buffer("weight_mask", self.W_det_mask)  
         self.register_buffer("bias_mask", self.b_det_mask) 
 
         if det_training:
-            grad_mask_weight = self.W_det_mask
-            grad_mask_bias = self.b_det_mask
+            self.grad_mask_weight = self.W_det_mask
+            self.grad_mask_bias = self.b_det_mask
         else:
-            grad_mask_weight = ~self.W_det_mask
-            grad_mask_bias = ~self.b_det_mask
+            self.grad_mask_weight = ~self.W_det_mask
+            self.grad_mask_bias = ~self.b_det_mask
 
         self.W = nn.Parameter(torch.zeros(self.n_in, self.n_out), True).to(self.device)
         self.b = nn.Parameter(torch.zeros(self.n_out), True).to(self.device)
-        self.weight_hook = self.W.register_hook(lambda grad: grad * grad_mask_weight)
-        self.bias_hook = self.b.register_hook(lambda grad: grad * grad_mask_bias)
+        self.weight_hook = self.W.register_hook(lambda grad: grad * self.grad_mask_weight)
+        self.bias_hook = self.b.register_hook(lambda grad: grad * self.grad_mask_bias)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -94,6 +94,7 @@ class MaskedLinear(nn.Module):
 
         return torch.matmul(X, Ws) + bs
 
+
     def change_hook(self, det_training, dropout, p):
         self.weight_hook.remove()
         self.bias_hook.remove()
@@ -112,85 +113,39 @@ class MaskedLinear(nn.Module):
         self.bias_hook = self.b.register_hook(lambda grad: grad * grad_mask_bias)
         self.det_training = det_training
 
-    def change_hook_wcp(self):
-        weight_eta = torch.abs(self.W.grad)
-        bias_eta = torch.abs(self.b.grad)
-        # Remove hooks
-        self.weight_hook.remove()
-        self.bias_hook.remove()
-        # Get new masks
-        grad_mask_weight = self.W_det_mask * self._sample_tensor_from_wcp(self.W.shape, weight_eta)
-        grad_mask_bias = self.b_det_mask * self._sample_tensor_from_wcp(self.b.shape, bias_eta)
-        # Get new hooks
-        self.weight_hook = self.W.register_hook(lambda grad: grad * grad_mask_weight)
-        self.bias_hook = self.b.register_hook(lambda grad: grad * grad_mask_bias)
+    def change_hook_wcp(self, step, num_steps):
+            weight_grad_shape = self.W.grad.shape
+            bias_grad_shape = self.b.grad.shape
+            # Remove hooks
+            self.weight_hook.remove()
+            self.bias_hook.remove()
+            # Get new masks
+            grad_mask_weight = self.W_det_mask * self.perform_wcp_regularization(weight_grad_shape, step, num_steps)
+            grad_mask_bias = self.b_det_mask * self.perform_wcp_regularization(bias_grad_shape, step, num_steps)
+            # Get new hooks
+            self.weight_hook = self.W.register_hook(lambda grad: grad * grad_mask_weight)
+            self.bias_hook = self.b.register_hook(lambda grad: grad * grad_mask_bias)
 
-    # Sample a single tensor from Normal(m, s)
-    def _sample_tensor_from_wcp(self, shape, eta):
-        eta = eta.to(self.device)
+    def perform_wcp_regularization(self, eta_shape, step, num_steps):
+        def zero_one_schedule(i, n_epochs):
+            t = (1-1e-8*n_epochs)/(1- n_epochs)
+            m = 1e-8-t
+            return m*i +t
+            
+        # Here perform sampling
+        def sample_from_wcp(eta_vals, max_uniform):
+            new_mean = 1- max_uniform
+            eta_safe = eta_vals.clamp(min=1e-6)  # prevent invalid exponential rates
+            r = torch.distributions.Exponential(eta_safe).sample()
+            # s>=0
+            t = torch.pi * torch.rand(eta_vals.shape, device=eta_vals.device)
+            m = r * torch.cos(t) + new_mean
+            s = r * torch.sin(t)
+            return m, s
+        max_uniform = zero_one_schedule(step, num_steps)
+        eta_vals = torch.rand(*eta_shape) * max_uniform
+        eta_vals = eta_vals.to(self.device)
 
-        # Output tensor initialized to zeros
-        out = torch.zeros(shape, device=self.device)
-
-        # Mask where eta is not zero
-        nonzero_mask = eta != 0
-        if not nonzero_mask.any():
-            return out
-
-        eta_nonzero = eta[nonzero_mask]
-        num_samples = eta_nonzero.numel()
-
-        def sample_m_s(num_samples, eta_vals, M=10.0, S=10.0, epsilon=1e-3):
-            def wcp_density(m, s, eta_vals):
-                r = torch.sqrt(m**2 + s**2)
-                return eta_vals * torch.exp(-eta_vals * r) / (math.pi * r)
-
-            samples_m = torch.empty(num_samples, device=self.device)
-            samples_s = torch.empty(num_samples, device=self.device)
-
-            batch_size = 4096
-            collected = 0
-
-            while collected < num_samples:
-                remaining = num_samples - collected
-
-                batch_eta = eta_vals[collected:collected + remaining]
-                current_batch_size = batch_eta.shape[0]
-
-                m = (torch.rand(batch_size, device=self.device) * 2 - 1) * M
-                s = torch.rand(batch_size, device=self.device) * (S - epsilon) + epsilon
-
-                # Expand eta to match batch for vectorized comparison
-                eta_expanded = batch_eta.view(-1, 1)
-                m_expanded = m.unsqueeze(0).expand(current_batch_size, -1)
-                s_expanded = s.unsqueeze(0).expand(current_batch_size, -1)
-
-                p = wcp_density(m_expanded, s_expanded, eta_expanded)
-                max_density = wcp_density(
-                    torch.tensor(0.0, device=self.device),
-                    torch.tensor(epsilon, device=self.device),
-                    eta_expanded
-                )
-
-                u = torch.rand_like(p) * max_density
-                accepted = u < p
-
-                # For each eta value, accept the first valid sample
-                for i in range(current_batch_size):
-                    accepted_idx = torch.nonzero(accepted[i], as_tuple=False)
-                    if accepted_idx.numel() > 0:
-                        idx = accepted_idx[0, 0]
-                        samples_m[collected] = m[idx]
-                        samples_s[collected] = s[idx]
-                        collected += 1
-                        if collected == num_samples:
-                            break
-
-            return samples_m, samples_s
-
-        m, s = sample_m_s(num_samples, eta_nonzero)
-        eps = torch.randn(num_samples, device=self.device)
-        samples = m + s * eps
-
-        out[nonzero_mask] = samples
-        return out
+        m, s = sample_from_wcp(eta_vals, max_uniform)
+        sampled_values = torch.normal(mean=m, std=s)
+        return sampled_values

@@ -13,7 +13,6 @@ class PartiallyStochasticLinearNP(nn.Module):
         super(PartiallyStochasticLinearNP, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.bias = bias
         self.scaled_variance = scaled_variance
 
         # Save full weight matrix and bias

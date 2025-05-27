@@ -116,7 +116,8 @@ class MLPMasked(nn.Module):
             return torch.exp(self.forward(X, log_softmax=True))
         else:
             return self.forward(X, log_softmax=False)
-
+            
+            
     def change_hook(self, det_training, dropout = False, p =0.5):
         for layer in self.layers:
             layer.change_hook(det_training, dropout, p)

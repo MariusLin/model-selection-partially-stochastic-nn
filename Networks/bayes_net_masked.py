@@ -13,7 +13,10 @@ from itertools import islice
 
 from Samplers.adaptive_sghmc import AdaptiveSGHMC
 from Samplers.sghmc import SGHMC
+from Optimizers.vsgd import VSGD
+from Optimizers.sam import SAM
 from Utilities.util import inf_loop, ensure_dir, prepare_device
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
 class BayesNetMasked:
@@ -324,8 +327,10 @@ class BayesNetMasked:
 
         # Initialize the batch generator
         batch_generator = islice(enumerate(train_loader), num_steps)
+        # Here SAM with VSGD
+        deterministic_optimizer = SAM(self.net.parameters(), VSGD, rho=5e-2, adaptive=True,
+                                    lr=2*lr) 
 
-        deterministic_optimizer = torch.optim.Adam(self.net.parameters(), lr = lr)
         # Start sampling
         self.net.train()
         n_samples = 0 # used to discard first samples
@@ -338,50 +343,48 @@ class BayesNetMasked:
                 y_batch = y_batch.view(-1, 1)
             self.sampler.zero_grad()
             deterministic_optimizer.zero_grad()
-            with torch.autocast(device_type=self.device.type if self.device.type in ['cuda', 'cpu'] else 'cpu'):
-                # Forward pass
-                if self.task == "regression":
-                    fx_batch = self.net(x_batch).view(-1, 1)
-                    if prevent_overfitting != "Early Stopping" and step <= 100:
-                        det_loss_fn = nn.MSELoss()
-                        det_loss = det_loss_fn(fx_batch, y_batch)
-                elif self.task == "classification":
-                    fx_batch = self.net(x_batch, log_softmax=True)
-                    if prevent_overfitting != "Early Stopping" and step <= 100:
-                        det_loss_fn = nn.CrossEntropyLoss()
-                        det_loss = det_loss_fn(fx_batch, y_batch)
-                # Calculate the negative log joint density
-                loss = self._neg_log_joint(fx_batch, y_batch, num_datapoints)
+            if self.task == "regression":
+                fx_batch = self.net(x_batch).view(-1, 1)
+            elif self.task == "classification":
+                fx_batch = self.net(x_batch, log_softmax=True)
+            loss = self._neg_log_joint(fx_batch, y_batch, num_datapoints)
             # Estimate the gradients
             loss.backward(retain_graph = True)
             torch.nn.utils.clip_grad_norm_(self.net.parameters(), 100.)
 
             # Update parameters
             self.sampler.step()
-            if prevent_overfitting == "Dropout":
-                # Use dropout with probability of 0.5
-                self.net.change_hook(True, dropout = True)
-                det_loss.backward(retain_graph = True)
-                deterministic_optimizer.step()
+            if prevent_overfitting != "Early Stopping" or step <= 2000:
+                # Here perform training of the deterministic weights
+                if self.task == "regression":
+                    det_loss_fn = nn.MSELoss()
+                elif self.task == "classification":
+                    det_loss_fn = nn.CrossEntropyLoss()
+                if prevent_overfitting == "Dropout":
+                    self.net.change_hook(True, dropout = True)
+                elif prevent_overfitting == "WCP":
+                    self.net.change_hook_wcp(step, num_steps)                               
+                else:
+                    self.net.change_hook(det_training = True)
+                # Perform the first step
+                if self.task == "regression":
+                    fx_batch1 = self.net(x_batch).view(-1, 1)
+                elif self.task == "classification":
+                    fx_batch1 = self.net(x_batch, log_softmax=True)
+                det_loss1 = det_loss_fn(fx_batch1, y_batch)
+                det_loss1.backward(retain_graph = True)
+                deterministic_optimizer.first_step(zero_grad=True)
+                # Perform the second step
+                if self.task == "regression":
+                    fx_batch2 = self.net(x_batch).view(-1, 1)
+                elif self.task == "classification":
+                    fx_batch2 = self.net(x_batch, log_softmax=True)
+                det_loss2 = det_loss_fn(fx_batch2, y_batch)
+                det_loss2.backward(retain_graph = True)
+                deterministic_optimizer.second_step(zero_grad=True)
+                # Reset the masks
                 self.net.change_hook(False)
-            elif prevent_overfitting == "Early Stopping":
-                if step <= 100:
-                    self.net.change_hook(True)
-                    det_loss.backward(retain_graph = True)
-                    deterministic_optimizer.step()
-                    self.net.change_hook(False)
-            elif prevent_overfitting == "WCP":
-                # WCP with \mathcal{N}(0,0) as base model
-                self.net.change_hook(True)
-                det_loss.backward(retain_graph = True)
-                self.net.change_hook_wcp(step, num_steps)
-                deterministic_optimizer.step()
-                self.net.change_hook(False)
-            else: # Nothing to prevent from overfitting
-                self.net.change_hook(True)
-                det_loss.backward(retain_graph = True)
-                deterministic_optimizer.step()
-                self.net.change_hook(False)
+
             self.step += 1
 
             # Resample hyper-parameters of the prior
