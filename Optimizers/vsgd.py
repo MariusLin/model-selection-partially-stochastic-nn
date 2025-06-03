@@ -139,12 +139,12 @@ class VSGD(Optimizer):
             if len(state) == 0:
                 for k in ["mug", "bg", "bhg"]:
                     # set a non zero small number to represent prior ignornance
-                    state[k] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    state[k] = torch.zeros_like(p, memory_format=torch.preserve_format, device = p.device)
                 # initialize 2*a_0 and 2*b_0 as constants
-                state["pa2"] = torch.tensor(2.0 * ps + 1.0 + 1e-4)
-                state["pbg2"] = torch.tensor(2.0 * ps)
-                state["pbhg2"] = torch.tensor(2.0 * ghattg * ps)
-                state["step"] = torch.tensor(0.0)
+                state["pa2"] = torch.tensor(2.0 * ps + 1.0 + 1e-4, device = p.device)
+                state["pbg2"] = torch.tensor(2.0 * ps, device = p.device)
+                state["pbhg2"] = torch.tensor(2.0 * ghattg * ps, device = p.device)
+                state["step"] = torch.tensor(0.0, device = p.device)
 
             mug_list.append(state["mug"])
             bg_list.append(state["bg"])

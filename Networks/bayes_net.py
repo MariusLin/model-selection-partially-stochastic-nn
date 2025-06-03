@@ -17,8 +17,9 @@ from Samplers.sghmc import SGHMC
 from Optimizers.sam import SAM
 from torch.optim import Adam
 from Utilities.util import inf_loop, ensure_dir, prepare_device
+from Networks.mlp import MLP
 
-class BayesNetMasked:
+class BayesNet:
     def __init__(self, net, likelihood, prior, ckpt_dir, temperature=1.0,
                  sampling_method="adaptive_sghmc",
                  weights_format="state_dict", task="regression",
@@ -249,8 +250,7 @@ class BayesNetMasked:
                        n_discarded, num_burn_in_steps,
                        lr, batch_size, epsilon, mdecay,
                        print_every_n_samples, continue_training=False,
-                       clear_sampled_weights=False,
-                       lambd = lambd, sam = sam)
+                       clear_sampled_weights=False, sam = sam)
             if self.task == "classification":
                 self._save_sampled_weights()
                 self.sampled_weights.clear()
@@ -260,7 +260,7 @@ class BayesNetMasked:
               num_samples=None, keep_every=100, n_discarded=0,
               num_burn_in_steps=3000, lr=1e-2, batch_size=32, epsilon=1e-10,
               mdecay=0.05, print_every_n_samples=10, continue_training=False,
-              clear_sampled_weights=True, lambd = 0.5, sam = False):
+              clear_sampled_weights=True, sam = False):
         """
         Train a BNN using a given dataset.
 
@@ -316,17 +316,11 @@ class BayesNetMasked:
         num_steps = 0 if num_samples is None else (num_samples+1) * keep_every
         # Find the stochastic parameters and the deterministic parameters
         stoch_params = []
-        omega_params = []
-        for layer in self.net.layers:
-            for name, param in layer.named_parameters():
-                # Filter between stochastic and deterministic parameters
-                if "det" in name:
-                    omega_params.append(param)
-                else:
-                    stoch_params.append(param)
-
-        # The output layer is deterministic by design
-        omega_params.extend(self.net.output_layer.parameters())
+        det_params = []
+        if isinstance(self.net, MLP):
+            for layer in self.net.layers:
+                stoch_params.extend(layer.parameters())
+        det_params.extend(self.net.output_layer.parameters())
         # Initialize the sampler
         if not continue_training:
             if clear_sampled_weights:
@@ -339,14 +333,13 @@ class BayesNetMasked:
         # Initialize the batch generator
         batch_generator = islice(enumerate(train_loader), num_steps)
         if sam:
-            deterministic_optimizer = SAM(omega_params, Adam, rho=5e-2, adaptive=False,
+            deterministic_optimizer = SAM(det_params, Adam, rho=5e-2, adaptive=False,
                                         lr=lr) 
         else:
-            deterministic_optimizer = Adam(omega_params, lr = lr)
+            deterministic_optimizer = Adam(det_params, lr = lr)
         # Start sampling
         self.net.train()
         n_samples = 0 # used to discard first samples
-
         prof =  torch.profiler.profile(
             activities=[
                 torch.profiler.ProfilerActivity.CPU,
@@ -364,6 +357,7 @@ class BayesNetMasked:
             if self.task == "regression":
                 x_batch = x_batch.view(y_batch.shape[0], -1)
                 y_batch = y_batch.view(-1, 1)
+            #device_type = "cuda" if "cuda" in str(self.device) else "cpu"
             with torch.autocast(device_type=self.device.type):
                 if self.task == "regression":
                     fx_batch = self.net(x_batch).view(-1, 1)
@@ -373,18 +367,15 @@ class BayesNetMasked:
             # Estimate the gradients
             loss.backward()
             torch.nn.utils.clip_grad_norm_(stoch_params, 100.)
+
             # Update parameters
             self.sampler.step()
-
             # Deterministic training with SAM
             det_loss_fn = nn.MSELoss() if self.task == "regression" else nn.CrossEntropyLoss()
 
             with torch.autocast(device_type=self.device.type):
                 fx_batch1 = self.net(x_batch).view(-1, 1) if self.task == "regression" else self.net(x_batch, log_softmax=True)
                 det_loss1 = det_loss_fn(fx_batch1, y_batch)
-                if not sam:
-                    regularization = sum((param ** 2).sum() for param in omega_params) * lambd
-                    det_loss1 += regularization
             det_loss1.backward()
             if sam:
                 deterministic_optimizer.first_step(zero_grad=True)
@@ -392,10 +383,7 @@ class BayesNetMasked:
                 with torch.autocast(device_type=self.device.type):
                     fx_batch2 = self.net(x_batch).view(-1, 1) if self.task == "regression" else self.net(x_batch, log_softmax=True)
                     det_loss2 = det_loss_fn(fx_batch2, y_batch)
-                    # For second step add regularization
-                    if omega_params:
-                        regularization =  sum((param ** 2).sum() for param in omega_params) * lambd
-                        det_loss2+= regularization        
+                # For second step add regularization
                 det_loss2.backward(retain_graph = True)
                 deterministic_optimizer.second_step(zero_grad=True)
             else:
@@ -405,28 +393,21 @@ class BayesNetMasked:
 
             # Save the sampled weight
             if (step > num_burn_in_steps) and \
-                        ((step - num_burn_in_steps) % keep_every == 0):
+                    ((step - num_burn_in_steps) % keep_every == 0):
                 n_samples += 1
                 if n_samples > n_discarded:
                     self.sampled_weights.append(copy.deepcopy(
-                            self.network_weights))
+                        self.network_weights))
                     self.num_samples += 1
 
                     # Print evaluation on training data
                     if self.num_samples % print_every_n_samples == 0:
                         self.net.eval()
-                        num_pruned = 0
-                        if omega_params:
-                            for layer in self.net.layers:
-                                num_pruned += (layer.get_W_det() == 0).sum().item()
-                                num_pruned += (layer.get_b_det() == 0).sum().item()
-                            num_pruned+=(self.net.output_layer.get_W()==0).sum().item()
-                            num_pruned+=(self.net.output_layer.get_b()==0).sum().item()
 
                         if (x_train is not None) and (y_train is not None):
-                            self._print_evaluations(x_train, y_train, True, num_pruned=num_pruned)
+                            self._print_evaluations(x_train, y_train, True)
                         else:
-                            self._print_evaluations(x_batch, y_batch, True, num_pruned = num_pruned)
+                            self._print_evaluations(x_batch, y_batch, True)
                         self.net.train()
             if step <= 1000:
                 prof.step()
@@ -434,13 +415,12 @@ class BayesNetMasked:
                 prof.stop()
                 if sam:
                     # Save profiler summary to a text file instead of printing
-                    with open("profiler_summary_inference_sam.txt", "w") as f:
+                    with open("profiler_summary_inference_stoch_only_sam.txt", "w") as f:
                         f.write(prof.key_averages().table())
                 else:
                     # Save profiler summary to a text file instead of printing
-                    with open("profiler_summary_inference_no_sam.txt", "w") as f:
+                    with open("profiler_summary_inference_stoch_and_det_no_sam.txt", "w") as f:
                         f.write(prof.key_averages().table())
-
 
     def _save_checkpoint(self, mode="best"):
         """Save sampled weights, sampler state into a single checkpoint file.

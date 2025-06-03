@@ -222,7 +222,7 @@ class ClassificationNetMasked(BayesNetMasked):
 
         return mean_predictions
 
-    def _print_evaluations(self, x, y, train=True):
+    def _print_evaluations(self, x, y, train=True, num_pruned = 0):
         """Evaluate the sampled weights on training/validation data and
             during the training log the results.
 
@@ -237,7 +237,7 @@ class ClassificationNetMasked(BayesNetMasked):
 
         if train:
             self.print_info("Samples # {:5d} : NLL = {:.5f} "
-                "Acc = {:.4f} ".format(self.num_samples, nll_, acc_))
+                "Acc = {:.4f}  Pruned weights: {:d}".format(self.num_samples, nll_, acc_, num_pruned))
         else:
-            self.print_info("Validation: NLL = {:.5f} Acc = {:.4f}".format(
-                nll_, acc_))
+            self.print_info("Validation: NLL = {:.5f} Acc = {:.4f} Pruned weights: {:d}".format(
+                nll_, acc_, num_pruned))

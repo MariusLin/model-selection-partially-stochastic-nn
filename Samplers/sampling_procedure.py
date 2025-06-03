@@ -13,17 +13,13 @@ from Layers.partially_stochastic_linear_not_pruned import PartiallyStochasticLin
 
 
 class Mapper_Sampler:
-    def __init__(self, likelihood, adapted, device = "cpu"):
+    def __init__(self, likelihood, adapted):
           self.step = 0
           self.lik_module = likelihood
           self.num_samples = 0
           self.sampled_weights = []
           self.adapted = adapted
-          self.device = device
-        
-    def to(self, device):
-        self.device = torch.device(device)
-        return self 
+    
 
     def sample_multi_chains(self, net, data_loader, num_datapoints, X= None, y = None, num_chains=1, keep_every=200,
                             n_discarded=10, num_burn_in_steps=2000, num_samples = 30,
@@ -88,20 +84,20 @@ class Mapper_Sampler:
             sampler = SGHMC(params)
         # Start sampling
         net.train()
-        net.to(self.device)
         n_samples = 0 # used to discard first samples
         for step, (x_batch, y_batch) in batch_generator:
-            x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
             x_batch = x_batch.view(y_batch.shape[0], -1)
             y_batch = y_batch.view(-1, 1)
                 
-            fx_batch = net(x_batch).view(-1, 1).to(self.device)
+            fx_batch = net(x_batch).view(-1, 1)
 
             sampler.zero_grad()
 
             # Calculate the negative log joint density
             loss = self._neg_log_joint(net, fx_batch, y_batch, num_datapoints).float()
-            loss = loss.to(self.device)
+            print (loss.device)
+            for name, param in net.named_parameters():
+                print (f"{name}:{param.device}")
             # Estimate the gradients
             loss.backward(retain_graph = True)
             torch.nn.utils.clip_grad_norm_(net.parameters(), 100.)

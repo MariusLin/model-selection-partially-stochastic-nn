@@ -137,7 +137,6 @@ class FactorizedGaussianLinearReparameterization(nn.Module):
         bs = self.b_mu + af.adapted_softplus(b_std) *\
             torch.randn([n_samples, 1, self.n_out],
                         device=self.device)
-
         return torch.matmul(X, Ws) + bs
 
     def get_W_std_mask(self):

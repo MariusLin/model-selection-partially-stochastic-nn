@@ -4,12 +4,12 @@ import numpy as np
 import torch
 import copy
 
-from Networks.bayes_net_masked import BayesNetMasked
+from Networks.bayes_net import BayesNet
 from Utilities.normalization import zscore_normalization, zscore_unnormalization
 from Metrics.uncertainty import gaussian_nll, rmse
 
 
-class RegressionNetMasked(BayesNetMasked):
+class RegressionNet(BayesNet):
     def __init__(self, net, likelihood, prior, ckpt_dir,
                  temperature=1.0, normalize_input=True,
                  normalize_output=True, sampling_method="adaptive_sghmc",
@@ -28,7 +28,7 @@ class RegressionNetMasked(BayesNetMasked):
             logger: instance of logging.Logger.
             n_gpu: int, the number of used GPUs.
         """
-        BayesNetMasked.__init__(self, net, likelihood, prior, ckpt_dir, temperature,
+        BayesNet.__init__(self, net, likelihood, prior, ckpt_dir, temperature,
                           sampling_method, weights_format="tuple",
                           task="regression", logger=logger, n_gpu=n_gpu)
         self.do_normalize_input = normalize_input
@@ -139,7 +139,7 @@ class RegressionNetMasked(BayesNetMasked):
 
         return pred_mean, pred_var
 
-    def _print_evaluations(self, x, y, train=True, num_pruned = 0):
+    def _print_evaluations(self, x, y, train=True):
         """Evaluate the sampled weights on training/validation data and
             during the training log the results.
 
@@ -154,11 +154,12 @@ class RegressionNetMasked(BayesNetMasked):
         total_rmse = rmse(pred_mean, y)
 
         if train:
-            self.print_info("Samples # {:5d} : NLL = {:11.4e} RMSE = {:.4e} Pruned weights: {:d}".format(
-                self.num_samples, total_nll, total_rmse, num_pruned))
+            self.print_info("Samples # {:5d} : NLL = {:11.4e} "
+                 "RMSE = {:.4e} ".format(self.num_samples, total_nll,
+                                         total_rmse))
         else:
-            self.print_info("Validation: NLL = {:11.4e} RMSE = {:.4e} Pruned weights: {:d}".format(
-                total_nll, total_rmse, num_pruned))
+            self.print_info("Validation: NLL = {:11.4e} RMSE = {:.4e}".format(
+                total_nll, total_rmse))
 
         self.net.train()
 

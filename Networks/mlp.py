@@ -4,8 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from Utilities.activation_functions import *
-from Layers.masked_linear import MaskedLinear
-from Layers.factorized_linear import FactorizedLinear
+from Layers.linear import Linear
 
 
 def init_norm_layer(input_dim, norm_layer):
@@ -16,9 +15,10 @@ def init_norm_layer(input_dim, norm_layer):
         return nn.Identity()
 
 
-class MLPMasked(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dims, activation_fn, weight_masks, bias_masks, D, 
-                 W_std = None, b_std = None, scaled_variance=True, norm_layer=None, task="regression", device = "cpu"):
+class MLP(nn.Module):
+    def __init__(self, input_dim, output_dim, hidden_dims, activation_fn,
+                 scaled_variance=True, norm_layer=None,
+                 task="regression"):
         """Initialization.
 
         Args:
@@ -33,16 +33,13 @@ class MLPMasked(nn.Module):
             task: string, the type of task, it should be either `regression`
                 or `classification`.
         """
-        super(MLPMasked, self).__init__()
+        super(MLP, self).__init__()
 
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.hidden_dims = hidden_dims
         self.norm_layer = norm_layer
         self.task = task
-        self.weight_masks = weight_masks
-        self.bias_masks = bias_masks
-        self.device = device
 
         # Setup activation function
         options = {'cos': torch.cos, 'tanh': torch.tanh, 'relu': F.relu,
@@ -54,25 +51,23 @@ class MLPMasked(nn.Module):
         else:
             self.activation_fn = activation_fn
 
-        self.layers = nn.ModuleList([MaskedLinear(
-            input_dim, hidden_dims[0], self.bias_masks[0], self.weight_masks[0], D = D, W_std = W_std, b_std = b_std, 
-            scaled_variance=scaled_variance, device = self.device)])
+        self.layers = nn.ModuleList([Linear(
+            input_dim, hidden_dims[0], scaled_variance=scaled_variance)])
         self.norm_layers = nn.ModuleList([init_norm_layer(
             hidden_dims[0], self.norm_layer)])
         for i in range(1, len(hidden_dims)):
             self.layers.add_module(
-                "linear_{}".format(i), MaskedLinear(hidden_dims[i-1], hidden_dims[i], self.bias_masks[i],
-                self.weight_masks[i], D = D, W_std = W_std, b_std = b_std, scaled_variance=scaled_variance, 
-                device=self.device))
+                "linear_{}".format(i), Linear(hidden_dims[i-1], hidden_dims[i],
+                scaled_variance=scaled_variance))
             self.norm_layers.add_module(
                 "norm_{}".format(i), init_norm_layer(hidden_dims[i],
                                                      self.norm_layer))
-        self.output_layer = FactorizedLinear(hidden_dims[-1], output_dim, D= D, W_std=W_std, b_std=b_std,
-                                   scaled_variance=scaled_variance, device = self.device)
+        self.output_layer = Linear(hidden_dims[-1], output_dim,
+                                   scaled_variance=scaled_variance)
 
     def reset_parameters(self):
         for m in self.modules():
-            if isinstance(m, MaskedLinear):
+            if isinstance(m, Linear):
                 m.reset_parameters()
 
     def forward(self, X, log_softmax=False):
@@ -86,8 +81,6 @@ class MLPMasked(nn.Module):
         Returns:
             torch.tensor, [batch_size, output_dim], the output data.
         """
-        if not isinstance(X, torch.Tensor):
-            X = torch.tensor(X)
         X = X.view(-1, self.input_dim)
 
         for linear_layer, norm_layer in zip(list(self.layers),
@@ -116,38 +109,3 @@ class MLPMasked(nn.Module):
             return torch.exp(self.forward(X, log_softmax=True))
         else:
             return self.forward(X, log_softmax=False)
-            
-
-    def sample_functions(self, X, n_samples):
-        """Performs predictions using `n_samples` set of weights.
-
-        Args:
-            X: torch.tensor, [batch_size, input_dim], the input data.
-            n_samples: int, the number of weight samples used to make
-                predictions.
-
-        Returns:
-            torch.tensor, [batch_size, n_samples, output_dim], the output
-            data.
-        """
-        X = X.view(-1, self.input_dim)
-        X = torch.unsqueeze(X, 0).repeat([n_samples, 1, 1])
-        for linear_layer, norm_layer in zip(list(self.layers),
-                                            list(self.norm_layers)):
-            if self.norm_layer is None:
-                X = self.activation_fn(linear_layer.sample_predict(X, n_samples))
-            else:
-                X = linear_layer.sample_predict(X, n_samples)
-                out = torch.zeros_like(X, device=X.device, dtype=X.dtype)
-                for i in range(n_samples):
-                    out[i, :, :] = norm_layer(X[i, :, :])
-                X = self.activation_fn(out)
-
-        X = self.output_layer.sample_predict(X, n_samples)
-        X = torch.transpose(X, 0, 1)
-
-        return X
-    
-    def remove_params_output_layer(self):
-        self.output_layer.W.requires_grad_(False)
-        self.output_layer.b.requires_grad_(False)

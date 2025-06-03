@@ -363,8 +363,10 @@ class OptimGaussianPrior(PriorModule):
         super(OptimGaussianPrior, self).__init__()
         self.params = {}
         self.device = device
-
-        data = torch.load(saved_path, map_location=torch.device(self.device))
+        if isinstance(saved_path, str):
+            data = torch.load(saved_path, map_location=torch.device(self.device))
+        else:
+            data = saved_path
         for name, param in data.items():
             self.params[name] = param.to(self.device)
 
