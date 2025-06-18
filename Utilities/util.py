@@ -27,8 +27,10 @@ def load_uci_data(uci_dir, split_id, name, version="original"):
         x_test: numpy array, the test data points.
         y_test: numpy array, the test labels.
     """
-    datasets = ["boston", "concrete", "energy", "kin8nm",
-                "naval", "power", "protein", "wine", "yacht"]
+    datasets = ["boston", "drybean", "credit", "maternalhealth",
+                "obesity", "onlineshoppers", "steel", "htru2", "sepsis",
+                "concrete", "redwine", "whitewine", "song",
+                "hourbikesharing", "daybikesharing", "realetsate", "onlinenews"]
     if not(name in datasets):
         raise ValueError("Invalid dataset name.")
     assert version in ["original", "gap"]
