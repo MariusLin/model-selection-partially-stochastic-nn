@@ -1,19 +1,13 @@
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.nn.init as init
 from Initialization.DWF_initlialization import dwf_initialization
 
-
+"""
+This is a normal linear layer that uses DWF
+"""
 class FactorizedLinear(nn.Module):
     def __init__(self, n_in, n_out, D, W_std = None, b_std = None, scaled_variance=True, device = "cpu"):
-        """Initialization.
-
-        Args:
-            n_in: int, the size of the input data.
-            n_out: int, the size of the output.
-        """
         super(FactorizedLinear, self).__init__()
         self.n_in = n_in
         self.n_out = n_out
@@ -104,16 +98,16 @@ class FactorizedLinear(nn.Module):
         b[torch.abs(b) < eps_tiny] = 0.0
         return b
     
-    def get_num_pruned_W(self):
+    def get_nums_pruned_W(self):
         """
         Returns the number of pruned weights
         """
         W = self.get_W()
-        return torch.sum(W == 0).item()
+        return 0, torch.sum(W == 0).item()
     
-    def get_num_pruned_b(self):
+    def get_nums_pruned_b(self):
         """
         Returns the number of pruned biases
         """
         b = self.get_b()
-        return torch.sum(b == 0).item()
+        return 0, torch.sum(b == 0).item()

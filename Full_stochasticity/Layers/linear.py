@@ -4,7 +4,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 
-
+"""
+This is taken from Tran et al. 2022
+It is a normal linear layer of a neural network
+"""
 class Linear(nn.Module):
     def __init__(self, n_in, n_out, scaled_variance=True):
         """Initialization.
@@ -40,6 +43,7 @@ class Linear(nn.Module):
         Returns:
             output: torch.tensor, [batch_size, output_dim], the output data.
         """
+        X = X.float()
         W = self.W
         if self.scaled_variance:
             W = W / math.sqrt(self.n_in)

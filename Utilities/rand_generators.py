@@ -5,7 +5,9 @@ from . import util
 
 from itertools import islice
 
-
+"""
+This is taken from Tran et al. 2022
+"""
 class ClassificationGenerator(object):
     def __init__(self, data_loader):
         self.batch_size = data_loader.batch_size
@@ -69,8 +71,7 @@ class MeasureSetGenerator(object):
         self.x_min = x_min
         self.x_max = x_max
         self.real_ratio = real_ratio
-
-        # Initialize generator to create random pointss
+        # Initialize generator to create random points
         self.rand_generator = torch.distributions.uniform.Uniform(
             torch.from_numpy(self.x_min).float(),
             torch.from_numpy(self.x_max).float())

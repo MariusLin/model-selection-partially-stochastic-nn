@@ -1,5 +1,3 @@
-"""Bayesian Neural Network for regression."""
-
 import numpy as np
 import torch
 import copy
@@ -8,9 +6,12 @@ from Partial_stochasticity.Networks.bayes_net_masked import BayesNetMasked
 from Utilities.normalization import zscore_normalization, zscore_unnormalization
 from Metrics.uncertainty import gaussian_nll, rmse
 
-
+"""
+This is a slight adaptation from Tran et al. 2022
+Bayesian Neural Network for regression with masks to split the weights into stochastic and deterministic weights
+"""
 class RegressionNetMasked(BayesNetMasked):
-    def __init__(self, net, likelihood, prior, ckpt_dir,
+    def __init__(self, net, likelihood, prior, ckpt_dir, out_det = True, 
                  temperature=1.0, normalize_input=True,
                  normalize_output=True, sampling_method="adaptive_sghmc",
                  logger=None, n_gpu=0):
@@ -30,7 +31,7 @@ class RegressionNetMasked(BayesNetMasked):
         """
         BayesNetMasked.__init__(self, net, likelihood, prior, ckpt_dir, temperature,
                           sampling_method, weights_format="tuple",
-                          task="regression", logger=logger, n_gpu=n_gpu)
+                          task="regression", logger=logger, n_gpu=n_gpu, out_det=out_det)
         self.do_normalize_input = normalize_input
         self.do_normalize_output = normalize_output
 

@@ -1,27 +1,16 @@
 import math
-import numpy as np
 import torch
 import torch.nn as nn
 import Utilities.activation_functions as af
 from Initialization.DWF_initlialization import dwf_initialization
 
-
+"""
+It defines a linear layer where every parameter has a Gaussian prior
+Additionally, we perform DWF on the standard deviations
+"""
 class FactorizedGaussianLinearReparameterization(nn.Module):
     def __init__(self, n_in, n_out, D, W_std=None,
                  b_std=None, scaled_variance=True, prior_per='layer', device = "cpu"):
-        """Initialization.
-
-        Args:
-            n_in: int, the size of the input data.
-            n_out: int, the size of the output.
-            W_std: float, the initial value of
-                the standard deviation of the weights.
-            b_std: float, the initial value of
-                the standard deviation of the biases.
-            prior_per: str, indicates whether using different prior for
-                each parameter, option `parameter`, or use the share the
-                prior for all parameters in the same layer, option `layer`.
-        """
         super(FactorizedGaussianLinearReparameterization, self).__init__()
 
         self.n_in = n_in

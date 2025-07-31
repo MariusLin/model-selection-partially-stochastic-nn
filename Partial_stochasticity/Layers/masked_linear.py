@@ -3,22 +3,28 @@ import torch
 import torch.nn as nn
 from Initialization.DWF_initlialization import dwf_initialization
 
-
+"""
+This is a linear layer with masks to split the deterministic and stochastic parameters.
+True means deterministic and false means stochastic
+Additionally, we perform DWF on the deterministic parameters
+"""
 class MaskedLinear(nn.Module):
-    def __init__(self, n_in, n_out, b_det_mask, W_det_mask, D, W_std = None, b_std = None, scaled_variance=True, 
-                 device = "cpu"):
-        """Initialization.
-
-        Args:
-            n_in: int, the size of the input data.
-            n_out: int, the size of the output.
-        """
+    def __init__(self, n_in, n_out, b_det_mask, W_det_mask, D, prior_W_std = None, prior_b_std = None,
+                 W_std = None, b_std = None, scaled_variance=True, device = "cpu"):
         super(MaskedLinear, self).__init__()
         self.device = device
         self.n_in = n_in
         self.n_out = n_out
         self.scaled_variance = scaled_variance
         self.D = D
+        if prior_W_std is not None:
+            self.prior_W_std = prior_W_std.to(self.device)
+        else:
+            self.prior_W_std = torch.ones((n_in, n_out), device = device)
+        if prior_b_std is not None:
+            self.prior_b_std = prior_b_std.to(self.device)
+        else:
+            self.prior_b_std = torch.ones((n_out), device = device)
         self.W_det_mask = W_det_mask.to(self.device)
         self.W_stoch_mask = ~W_det_mask.to(self.device)
         self.b_det_mask = b_det_mask.to(self.device)
@@ -33,8 +39,8 @@ class MaskedLinear(nn.Module):
             b_std = 1.
 
         # Register the masks and perform masking
-        self.register_buffer("weight_mask", self.W_det_mask)  
-        self.register_buffer("bias_mask", self.b_det_mask) 
+        # self.register_buffer("weight_mask", self.W_det_mask)  
+        # self.register_buffer("bias_mask", self.b_det_mask) 
 
         full_weight = torch.zeros(self.n_in, self.n_out, device = self.device)
         full_bias = torch.zeros(self.n_out, device = self.device)
@@ -65,14 +71,12 @@ class MaskedLinear(nn.Module):
 
     def reset_parameters(self):
         with torch.no_grad():
-            # Reinitialize only the weights where the mask is 1
-            std = 1.
-            if not self.scaled_variance:
-                std = std / math.sqrt(self.n_in)
-
+            if self.scaled_variance:
+                self.prior_b_std = self.prior_b_std / math.sqrt(self.n_in)
+                self.prior_W_std = self.prior_W_std / math.sqrt(self.n_in)
         # Sample new weights/biases only for the stochastic parameters
-        new_W = torch.rand(self.n_in, self.n_out, device=self.device)
-        new_b = torch.zeros(self.n_out, device = self.device)
+        new_W = torch.rand(self.n_in, self.n_out, device=self.device) * self.prior_W_std
+        new_b = torch.zeros(self.n_out, device = self.device) * self.prior_b_std
 
         self.W_stoch.data = new_W[self.W_stoch_mask]
         self.b_stoch.data = new_b[self.b_stoch_mask]
@@ -86,6 +90,7 @@ class MaskedLinear(nn.Module):
         Returns:
             output: torch.tensor, [batch_size, output_dim], the output data.
         """
+        X = X.float()
         W = self.get_W()
         if self.scaled_variance:
             W = W / math.sqrt(self.n_in)

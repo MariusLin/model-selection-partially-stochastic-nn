@@ -5,9 +5,10 @@ import torch.nn.functional as F
 
 from Utilities.activation_functions import *
 from Partial_stochasticity.Layers.factorized_gaussian_linear_reparam import FactorizedGaussianLinearReparameterization
-from Partial_stochasticity.Layers.linear import Linear
 
-
+"""
+This is a MLP with a Gaussian prior on all parameters. Additionally, we perform DWF with the standard deviations
+"""
 def init_norm_layer(input_dim, norm_layer):
     if norm_layer == "batchnorm":
         return nn.BatchNorm1d(input_dim, eps=0, momentum=None,
@@ -19,20 +20,6 @@ def init_norm_layer(input_dim, norm_layer):
 class FactorizedGaussianMLPReparameterization(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims, activation_fn, D,
                  W_std=None, b_std=None, scaled_variance=True, norm_layer=None, device = "cpu"):
-        """Initialization.
-
-        Args:
-            input_dim: int, the size of the input data.
-            output_dim: int, the size of the output data.
-            hidden_dims: list of int, the list containing the size of
-                hidden layers.
-            activation_fn: str, the name of activation function to be used
-                in the network.
-            W_std: float, the initial value of the logarithm of
-                the standard deviation of the weights.
-            b_std: float, the initial value of the logarithm of
-                the standard deviation of the biases.
-        """
         super(FactorizedGaussianMLPReparameterization, self).__init__()
 
         self.input_dim = input_dim
@@ -70,8 +57,9 @@ class FactorizedGaussianMLPReparameterization(nn.Module):
                 "norm_{}".format(i), init_norm_layer(hidden_dims[i],
                                                      self.norm_layer))
 
-        self.output_layer = Linear(
-            hidden_dims[-1], output_dim, scaled_variance=scaled_variance)
+        self.output_layer = FactorizedGaussianLinearReparameterization(
+            hidden_dims[-1], output_dim, self.D, W_std, b_std, scaled_variance=scaled_variance, prior_per="parameter",
+            device = self.device)
 
     def forward(self, X):
         """Performs forward pass given input data.
@@ -128,7 +116,7 @@ class FactorizedGaussianMLPReparameterization(nn.Module):
     def get_det_masks (self):
         det_mask_weights = []
         det_mask_bias = []
-        for layer in self.layers:
+        for layer in self.layers + [self.output_layer]:
             det_mask_weights.append(layer.get_W_std_mask())
             det_mask_bias.append(layer.get_b_std_mask())
 

@@ -1,9 +1,10 @@
-"""Defines some utilities for running experiments"""
-
 import torch
 import numpy as np
 
-
+"""
+This is taken from Tran et al. 2022
+Defines some utilities for running experiments
+"""
 def median_distance_local(x, default_value=1.0, eps=1e-6):
     """Get the median of distances between x.
 

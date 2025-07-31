@@ -1,13 +1,13 @@
-"""Defines metrics used to evaluate uncertainty."""
-
-import torch
 import numpy as np
 
 from scipy.stats import norm
 
 from Utilities.util import to_one_hot
 
-
+"""
+This is taken from Tran et al. 2022
+Defines metrics used to evaluate uncertainty
+"""
 def gaussian_nll(y, mu, var):
     """Calculates the negative log likelihood of Gaussian distribution.
 

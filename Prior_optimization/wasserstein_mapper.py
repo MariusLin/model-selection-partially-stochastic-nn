@@ -8,7 +8,10 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from Utilities.util import ensure_dir, prepare_device
 
-
+"""
+This is taken from Tran et al. 2022
+It defines a mapper to optimize the Wasserstein distance between the neural network and the GP
+"""
 class LipschitzFunction(nn.Module):
     def __init__(self, dim):
         super(LipschitzFunction, self).__init__()
@@ -161,6 +164,8 @@ class MapperWasserstein(object):
                  wasserstein_steps=(200, 200), wasserstein_lr=0.01, wasserstein_thres=0.01, 
                  logger=None, n_gpu=0, gpu_gp=False, lipschitz_constraint_type="gp"):
         self.gp = gp
+        if isinstance(self.gp, nn.DataParallel):
+            self.gp = self.gp.module
         self.bnn = bnn
         self.data_generator = data_generator
         self.n_data = n_data
@@ -202,6 +207,7 @@ class MapperWasserstein(object):
         self.ckpt_dir = os.path.join(self.out_dir, "ckpts")
         ensure_dir(self.ckpt_dir)
 
+        
     def optimize(self, num_iters, n_samples=128, lr=1e-2,
                  save_ckpt_every=50, print_every=10, debug=False):
         wdist_hist = []
@@ -216,22 +222,18 @@ class MapperWasserstein(object):
             X = X.to(self.device)
             if not self.gpu_gp:
                 X = X.to("cpu")
-
             # Draw functions from GP
             gp_samples = self.gp.sample_functions(
                 X.double(), n_samples).detach().float().to(self.device)
             if self.output_dim > 1:
                 gp_samples = gp_samples.squeeze()
-
             if not self.gpu_gp:
                 X = X.to(self.device)
-
             # Draw functions from BNN
             nnet_samples = self.bnn.sample_functions(
                 X, n_samples).float().to(self.device)
             if self.output_dim > 1:
                 nnet_samples = nnet_samples.squeeze()
-
             ## Initialisation of lipschitz_f
             self.wasserstein.lipschitz_f.apply(weights_init)
 
@@ -245,7 +247,6 @@ class MapperWasserstein(object):
             wdist = self.wasserstein.calculate(nnet_samples, gp_samples)
             wdist.backward()
             prior_optimizer.step()
-
             wdist_hist.append(float(wdist))
             if (it % print_every == 0) or it == 1:
                 self.print_info(">>> Iteration # {:3d}: "
@@ -256,6 +257,8 @@ class MapperWasserstein(object):
             if ((it) % save_ckpt_every == 0) or (it == num_iters):
                 path = os.path.join(self.ckpt_dir, "it-{}.ckpt".format(it))
                 torch.save(self.bnn.state_dict(), path)
+
+            torch.cuda.empty_cache()
 
         # Save accumulated list of intermediate wasserstein values
         if debug:

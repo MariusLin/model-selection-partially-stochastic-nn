@@ -1,8 +1,9 @@
-"""Defines some utility functions used to normalize and unnormalize data."""
-
 import numpy as np
 
-
+"""
+This is taken from Tran et al. 2022
+Defines some utility functions used to normalize and unnormalize data
+"""
 def zscore_normalization(X, mean=None, std=None, eps=1e-10):
     """Apply z-score normalization on a given data.
 

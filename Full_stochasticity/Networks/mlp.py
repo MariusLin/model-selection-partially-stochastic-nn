@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,7 +5,10 @@ import torch.nn.functional as F
 from Utilities.activation_functions import *
 from Full_stochasticity.Layers.linear import Linear
 
-
+"""
+This is taken from Tran et al. 2022
+It defines a multilayer perceptron
+"""
 def init_norm_layer(input_dim, norm_layer):
     if norm_layer == "batchnorm":
         return nn.BatchNorm1d(input_dim, eps=0, momentum=None,
@@ -81,6 +83,7 @@ class MLP(nn.Module):
         Returns:
             torch.tensor, [batch_size, output_dim], the output data.
         """
+        X = torch.tensor(X) if not isinstance(X, torch.Tensor) else X
         X = X.view(-1, self.input_dim)
 
         for linear_layer, norm_layer in zip(list(self.layers),

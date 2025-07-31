@@ -6,7 +6,10 @@ import torch.nn.functional as F
 from Utilities.activation_functions import *
 from Full_stochasticity.Layers.gaussian_reparam_linear import GaussianLinearReparameterization
 
-
+"""
+This is taken from Tran et al. 2022
+It is a multi-layer perceptron with a reparameterized Gaussian prior on the parameters
+"""
 def init_norm_layer(input_dim, norm_layer):
     if norm_layer == "batchnorm":
         return nn.BatchNorm1d(input_dim, eps=0, momentum=None,

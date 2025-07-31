@@ -1,5 +1,3 @@
-"""Defines prior modules."""
-
 import copy
 import torch
 import numpy as np
@@ -7,7 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as dist
 
-
+"""
+This is taken from Tran et al. 2022
+Defines prior modules
+"""
 class PriorModule(nn.Module):
     """Generic class of Prior module"""
     def __init__(self):
@@ -368,10 +369,15 @@ class OptimGaussianPrior(PriorModule):
         else:
             data = saved_path
         for name, param in data.items():
-            self.params[name] = param.to(self.device)
+            if isinstance(param, list):
+                for p in param:
+                    self.params[name] = p.to(self.device)
+            else:
+                self.params[name] = param.to(self.device)
 
     def to(self, device):
-        """Move the prior's parameters to configured device.
+        """
+        Move the prior's parameters to configured device.
         """
         for name in self.params.keys():
             self.params[name] = self.params[name].to(device)

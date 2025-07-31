@@ -1,5 +1,3 @@
-"""Bayesian Neural Network for classification."""
-
 import torch
 
 from tqdm import tqdm
@@ -8,7 +6,10 @@ from Full_stochasticity.Networks.bayes_net import BayesNet
 from Metrics.metrics_tensor import nll, accuracy
 from Utilities.util import get_all_data
 
-
+"""
+This is taken from Tran et al. 2022
+It defines a Bayesian neural network for classification
+"""
 class ClassificationNet(BayesNet):
     def __init__(self, net, likelihood, prior, ckpt_dir, temperature=1.0,
                  sampling_method="adaptive_sghmc", logger=None, n_gpu=1):
@@ -189,11 +190,10 @@ class ClassificationNet(BayesNet):
             torch tensor, the predicted mean.
         """
         self.net.eval()
-
         def network_predict(x_test_, weights, device):
             with torch.no_grad():
                 self.network_weights = weights
-                return self.net.predict(x_test_.to(device))
+                return self.net.predict(x_test_.to(self.device))
 
         # Make predictions
         network_outputs = []
@@ -232,7 +232,7 @@ class ClassificationNet(BayesNet):
             train: bool, indicate whether we're evaluating on the training data.
         """
         preds = self.predict(x, all_sampled_weights=(not train))
-        acc_ = accuracy(preds, y)
+        acc_ = accuracy(preds, y.to(self.device))
         nll_ = nll(preds, y)
 
         if train:

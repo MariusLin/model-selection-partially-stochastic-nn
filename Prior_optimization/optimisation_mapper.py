@@ -2,118 +2,80 @@ import numpy as np
 import torch
 from Utilities.util import ensure_dir
 import os
+import torch.nn as nn
 
-
+"""
+This is a mapper to perform the optimization of the prior 
+"""
 class PriorOptimisationMapper():
-    def __init__(self, out_dir, gp, device = "cpu"):
+    def __init__(self, out_dir, gp, out_det = True, device = "cpu"):
         self.out_dir = out_dir
         # Setup checkpoint directory
         self.ckpt_dir = os.path.join(self.out_dir, "ckpts")
         ensure_dir(self.ckpt_dir)
         self.device = device
         self.gp = gp
+        self.out_det = out_det
 
     def to(self, device):
         self.device = torch.device(device)
         return self
-    # ISEBSW from Nguyen, Ho 2023
-    # def ISEBSW(self, X, Y, L=10, p=2, device="cpu"):
-    #     def rand_projections(dim, num_projections=1000,device='cpu'):
-    #         projections = torch.randn((num_projections, dim),device=device)
-    #         projections = projections / torch.sqrt(torch.sum(projections ** 2, dim=1, keepdim=True))
-    #         return projections
-
-    #     def one_dimensional_Wasserstein_prod(X,Y,theta,p):
-    #         X_prod = torch.matmul(X, theta.transpose(0, 1))
-    #         Y_prod = torch.matmul(Y, theta.transpose(0, 1))
-    #         X_prod = X_prod.view(X_prod.shape[0], -1)
-    #         Y_prod = Y_prod.view(Y_prod.shape[0], -1)
-    #         wasserstein_distance = torch.abs(
-    #             (
-    #                     torch.sort(X_prod, dim=0)[0]
-    #                     - torch.sort(Y_prod, dim=0)[0]
-    #             )
-    #         )
-    #         wasserstein_distance = torch.sum(torch.pow(wasserstein_distance, p), dim=0,keepdim=True)
-    #         return wasserstein_distance
-    #     dim = X.size(1)
-    #     theta = rand_projections(dim, L,device)
-    #     wasserstein_distances = one_dimensional_Wasserstein_prod(X,Y,theta,p=p)
-    #     wasserstein_distances =  wasserstein_distances.view(1,L)
-    #     weights = torch.softmax(wasserstein_distances,dim=1)
-    #     sw = torch.sum(weights*wasserstein_distances,dim=1).mean()
-    #     return  torch.pow(sw,1./p)
     
-    def expectation_ISEBSW(self, nnet_samples, gp_samples, output_dim,  L=10, p=2, device="cpu"):
+    """
+    @inproceedings{NEURIPS2023,
+    author = {Nguyen, Khai and Ho, Nhat},
+    booktitle = {Advances in Neural Information Processing Systems},
+    editor = {A. Oh and T. Naumann and A. Globerson and K. Saenko and M. Hardt and S. Levine},
+    pages = {18046--18075},
+    publisher = {Curran Associates, Inc.},
+    title = {Energy-Based Sliced Wasserstein Distance},
+    url = {https://proceedings.neurips.cc/paper_files/paper/2023/file/3a23caeb904c822575fa56fb114ca499-Paper-Conference.pdf},
+    volume = {36},
+    year = {2023}
+    }
+    """
+    def ebswd(self, nnet_samples, gp_samples, output_dim, L=10, p=2, device="cpu"):
         """
-        Vectorized computation of expectation ISEBSW over the functions.
-        
+        Vectorized computation of EBSWD
+
         nnet_samples: tensor of shape [batch_size, num_functions, output_dim]
         gp_samples: tensor of shape [batch_size, num_functions, output_dim]
         """
-        # Move num_functions to batch dimension: [num_functions, batch_size, output_dim]
-        nnet_samples = nnet_samples.permute(1, 0, 2).contiguous()
-        gp_samples = gp_samples.permute(1, 0, 2).contiguous()
+        dist = 0
+        batch_size, *_ = gp_samples.shape
 
-        # Generate random projections: shared across all functions
-        theta = torch.randn((L, output_dim), device=device)
-        theta = theta / torch.sqrt(torch.sum(theta ** 2, dim=1, keepdim=True))  # normalize
-        # Project nnet and gp samples: [num_functions, batch_size, L]
-        nnet_proj = torch.matmul(nnet_samples, theta.T) 
-        gp_proj = torch.matmul(gp_samples, theta.T)
+        for dim in range(output_dim):
+            # Extract and reshape slices to [num_functions, batch_size]
+            nnet_samples_slice = nnet_samples[:, :, dim].permute(1, 0).contiguous()
+            gp_samples_slice = gp_samples[:, :, dim].permute(1, 0).contiguous()
 
-        # Sort projections along batch dimension
-        nnet_proj_sorted, _ = torch.sort(nnet_proj, dim=1)
-        gp_proj_sorted, _ = torch.sort(gp_proj, dim=1)
+            # Generate random directions: shape [L, num_functions]
+            theta = torch.randn((L, batch_size), device=device)
+            theta = theta / torch.norm(theta, dim=1, keepdim=True)  
 
-        # Compute Wasserstein distances: [num_functions, L]
-        wasserstein_distance = torch.abs(nnet_proj_sorted - gp_proj_sorted)
-        wasserstein_distance = torch.sum(wasserstein_distance ** p, dim=1)
+            # Project both sample sets: result shape [num_functions, L]
+            nnet_proj = torch.matmul(nnet_samples_slice, theta.T)  # [num_functions, L]
+            gp_proj = torch.matmul(gp_samples_slice, theta.T)
 
-        # Softmax weighting across L projections: [num_functions, L]
-        weights = torch.softmax(wasserstein_distance, dim=1)
+            # Sort projections along batch dimension (which is rows now)
+            nnet_proj_sorted, _ = torch.sort(nnet_proj, dim=0)
+            gp_proj_sorted, _ = torch.sort(gp_proj, dim=0)
 
-        # Weighted sum for each function: [num_functions]
-        sw = torch.sum(weights * wasserstein_distance, dim=1)
+            # Compute Wasserstein distances per projection: shape [L]
+            wasserstein_distance = torch.abs(nnet_proj_sorted - gp_proj_sorted)
+            wasserstein_distance = torch.sum(wasserstein_distance ** p, dim=0) 
 
-        # Compute SW^1/p
-        ise_bsw_values = sw ** (1. / p)
+            # Softmax over L projections
+            weights = torch.softmax(wasserstein_distance, dim=0)  # [L]
 
-        # Return mean across all functions
-        return ise_bsw_values.mean()
-    
+            # Weighted sum over L projections
+            sw = torch.sum(weights * wasserstein_distance)  # scalar
 
-    # def energy_distance(self, bnn_samples, gp_samples, num_pairs=64):
-    #     """
-    #     Approximate Energy Distance between BNN and GP samples using subsampling.
-        
-    #     bnn_samples, gp_samples: shape [batch_size, num_functions, output_dim]
-    #     num_pairs: number of random pairs to sample for each term
-    #     """
-    #     batch_size, num_functions, output_dim = bnn_samples.shape
+            ise_bsw_value = sw ** (1. / p)
 
-    #     # Flatten batch and num_functions for easy indexing
-    #     indices = torch.randint(0, num_functions, (batch_size, num_pairs), device=bnn_samples.device)
+            dist += ise_bsw_value
 
-    #     # Sample random pairs for cross term
-    #     idx1 = torch.randint(0, num_functions, (batch_size, num_pairs), device=bnn_samples.device)
-    #     idx2 = torch.randint(0, num_functions, (batch_size, num_pairs), device=bnn_samples.device)
-
-    #     # Gather samples
-    #     X1 = torch.gather(bnn_samples, 1, idx1.unsqueeze(-1).expand(-1, -1, output_dim))
-    #     X2 = torch.gather(bnn_samples, 1, idx2.unsqueeze(-1).expand(-1, -1, output_dim))
-
-    #     Y1 = torch.gather(gp_samples, 1, idx1.unsqueeze(-1).expand(-1, -1, output_dim))
-    #     Y2 = torch.gather(gp_samples, 1, idx2.unsqueeze(-1).expand(-1, -1, output_dim))
-
-    #     # Compute pairwise distances for each term
-    #     d_xy = torch.norm(X1 - Y1, dim=-1).mean(dim=1)  # cross term
-    #     d_xx = torch.norm(X1 - X2, dim=-1).mean(dim=1)  # BNN self-term
-    #     d_yy = torch.norm(Y1 - Y2, dim=-1).mean(dim=1)  # GP self-term
-
-    #     energy = 2.0 * d_xy - d_xx - d_yy
-    #     return energy.mean()
-
+        return dist
 
     def optimize(self, net, data_generator, n_data, num_iters, output_dim, lambd,
                 n_samples=128, lr=1e-1, print_every=100, save_ckpt_every = 500):
@@ -125,7 +87,8 @@ class PriorOptimisationMapper():
         # Cosine Annealing scheudle for the optimizer
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(prior_optimizer, T_max=num_iters)
         omega_params = []
-        for layer in net.layers:
+        # We want to impose different penalization scalars on different layers
+        for layer in net.layers + [net.output_layer]:
             layer_omega = []
             for name, param in layer.named_parameters():
                 if "omega" in name:
@@ -144,26 +107,41 @@ class PriorOptimisationMapper():
                 X.double(), n_samples).detach().float().to(self.device)
             if output_dim > 1:
                 gp_samples = gp_samples.squeeze()
-            # Draw functions from Neural Network
+            # Draw functions from BNN
             nnet_samples = net.sample_functions(
                 X, n_samples).float().to(self.device)
             if output_dim > 1:
                 nnet_samples = nnet_samples.squeeze()
             prior_optimizer.zero_grad()
-            reg_loss_vector = torch.tensor([torch.sum(omega_params_per_layer ** 2) \
-                               for omega_params_per_layer in omega_params]).to(self.device)
-            regularization = torch.matmul(lambd, reg_loss_vector)
-            sdist = self.expectation_ISEBSW(nnet_samples, gp_samples, output_dim = output_dim, device = self.device)
+            # Add regularization
+            if omega_params:
+                reg_loss_vector = torch.tensor([torch.sum(omega_params_per_layer ** 2) \
+                                    for omega_params_per_layer in omega_params]).to(self.device)
+                regularization = torch.matmul(lambd, reg_loss_vector)
+            else:
+                regularization = 0
+            sdist = self.ebswd(nnet_samples, gp_samples, output_dim = output_dim, device = self.device)
             loss = sdist + regularization
             loss.backward()
             torch.nn.utils.clip_grad_norm_(omega_params, 100.)
             prior_optimizer.step()
             scheduler.step()
 
+            # Check the number of pruned parameters
             num_pruned = 0
-            for layer in net.layers:
-                num_pruned += (layer.get_W_std() == 0).sum().item()
-                num_pruned += (layer.get_b_std() == 0).sum().item()
+            if omega_params:
+                for layer in net.layers:
+                    if isinstance(layer, nn.Sequential):
+                        for l in layer:
+                            if not isinstance(l, nn.BatchNorm2d):
+                                num_pruned += l.get_num_pruned_W_std()
+                                num_pruned += l.get_num_pruned_b_std()
+                    else:
+                        num_pruned += (layer.get_W_std() == 0).sum().item()
+                        num_pruned += (layer.get_b_std() == 0).sum().item()
+                if not self.out_det:
+                    num_pruned += (net.output_layer.get_W_std()==0).sum().item()
+                    num_pruned += (net.output_layer.get_b_std()==0).sum().item()
             pruned_hist = np.append(pruned_hist, num_pruned)
 
             sdist_hist = np.append(sdist_hist, float(sdist))
@@ -173,12 +151,39 @@ class PriorOptimisationMapper():
                             it, float(sdist)), f"Number of pruned stochastic weights: {num_pruned}")
             # Save checkpoint
             if ((it) % save_ckpt_every == 0) or (it == num_iters):
-                path = os.path.join(self.ckpt_dir, "ps-it-{}.ckpt".format(it))
-                checkpoint = {}
-                for i, layer in enumerate(net.layers):
-                    W_std = layer.get_W_std()
-                    b_std = layer.get_b_std()
-                    checkpoint[f"layer_{i}_W_std"] = W_std
-                    checkpoint[f"layer_{i}_b_std"] = b_std
-                torch.save(checkpoint, path)
+                path = os.path.join(self.ckpt_dir, "it-{}.ckpt".format(it))
+                if omega_params:
+                    checkpoint = {}
+                    for i, layer in enumerate(net.layers):
+                        if isinstance(layer, nn.Sequential):
+                            W_std = []
+                            b_std = []
+                            for l in layer:
+                                if not isinstance(l, nn.BatchNorm2d):
+                                    W_std_result = l.get_W_std()
+                                    if isinstance(W_std_result, list):
+                                        W_std.extend(W_std_result)
+                                    else:
+                                        W_std.append(W_std_result)
+
+                                    b_std_result = l.get_b_std()
+                                    if isinstance(b_std_result, list):
+                                        b_std.extend(b_std_result)
+                                    else:
+                                        b_std.append(b_std_result)
+                        else:
+                            W_std = layer.get_W_std()
+                            b_std = layer.get_b_std()
+                        checkpoint[f"layer_{i}_W_std"] = W_std
+                        checkpoint[f"layer_{i}_b_std"] = b_std
+                    if self.out_det:
+                        checkpoint["out_b_standdev"] = torch.std(net.output_layer.b, device = self.device).item()
+                        checkpoint["out_W_standdev"] = torch.std(net.output_layer.W, device = self.device).item()
+                    else:
+                        checkpoint["output_layer_W_std"] = net.output_layer.get_W_std()
+                        checkpoint["output_layer_b_std"] = net.output_layer.get_b_std()
+                    torch.save(checkpoint, path)   
+                else:
+                    torch.save(net.state_dict(), path)
+            torch.cuda.empty_cache()
         return pruned_hist, sdist_hist

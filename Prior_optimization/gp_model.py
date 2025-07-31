@@ -105,7 +105,6 @@ class GPModel(torch.nn.Module):
         """
         X = X.reshape((-1, self.kern.input_dim))
         mu = self.mean_function(X)
-
         prior_params = []
         for name in dict(self.kern.named_parameters()).keys():
             param = getattr(self.kern, name)
@@ -136,6 +135,7 @@ class GPModel(torch.nn.Module):
                             L = torch.linalg.cholesky(var + multiplier*jitter)
                             break
                         except RuntimeError as err:
+                            print (err)
                             multiplier *= 2
                     V = torch.randn(L.size(0), 1, dtype=L.dtype, device=L.device)
                     s.append(mu + torch.matmul(L, V))

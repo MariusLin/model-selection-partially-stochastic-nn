@@ -5,15 +5,13 @@ import numpy as np
 import math
 import fire
 import os
-
-os.chdir("..")
-
-SEED = 123
-util.set_seed(SEED)
-
+import sys
 import pickle
 import warnings 
 warnings.simplefilter("ignore", UserWarning)
+
+os.chdir("..")
+print ("Running partially stochastic regression")
 
 from Prior_optimization.gpr import GPR
 from Prior_optimization import kernels, mean_functions
@@ -31,6 +29,10 @@ from Prior_optimization.optimisation_mapper import PriorOptimisationMapper
 from Utilities import util
 from Utilities.priors import LogNormal
 
+SEED = 123
+util.set_seed(SEED)
+
+
 # setting device on GPU if available, else CPU
 n_gpu = 0
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -47,35 +49,36 @@ if device.type == 'cuda':
 
 data_dir = "./data/uci/regression"
 noise_var = 0.1
-n_hidden = 1
+n_hidden = 2
 activation_fn = "tanh"
 # setup depending on dataset
 def setup(dataset):
-    if dataset == "protein":
-        n_splits = 5
+    if dataset in ["song", "daybikesharing", "onlinenews"]:
         n_units = 200
     else:
-        n_splits = 10
         n_units = 100
-    out_dir = f"./exp/uci/{dataset}/partially_stochastic"
+    n_splits = 10
+    out_dir = f"./exp/uci/layer_sparsity/regression/partially_stochastic"
     util.ensure_dir(out_dir)
     return n_splits, n_units, out_dir
 
 # Configurations for the prior optimization
-D = 3
-mapper_batch_size = 256                                         # The factorization depth
+D = 3                                                            # The factorization depth
+mapper_batch_size = 128   
+num_iters = 3500                                     
 prior_opt_configurations = {
     "n_data": mapper_batch_size,                                # The batch size 
-    "num_iters": 5000,                                          # The number of iterations of the prior optimization
-    "lambd": (torch.tensor([0.25])/D).to(device),               # The regularization parameters for the layers
+    "num_iters": num_iters,                                     # The number of iterations of the prior optimization
+    "lambd": (torch.tensor([1.5, 1.2])/D).to(device),           # The regularization parameters for the layers
     "n_samples": 100,                                           # The number of function samples
-    "lr": 5e-2,                                                 # The learning rate for the optimizer
+    "lr": 3e-2,                                                 # The learning rate for the optimizer
     "print_every": 100,                                         # After how many epochs a evaluation should be printed
     "save_ckpt_every": 500                                      # After how many epochs a checkpoint should be saved
 }
 
-# Here prior optimization
-def prior_optimization(dataset):
+def prior_optimization(lambd):
+    dataset = "crop"
+    prior_opt_configurations["lambd"] = lambd
     n_splits, n_units, out_dir = setup(dataset)
     masks_list = []
     for split_id in range(n_splits):
@@ -96,7 +99,8 @@ def prior_optimization(dataset):
         
         lengthscale = math.sqrt(2. * input_dim)
         variance = 1.
-        kernel = kernels.Exponential(input_dim=input_dim,
+        # Try the Exponential now
+        kernel = kernels.RBF(input_dim=input_dim,
                             lengthscales=torch.tensor([lengthscale], dtype=torch.double),
                             variance=torch.tensor([variance], dtype=torch.double), ARD=True)
         # Place hyper-priors on lengthscales and variances
@@ -117,7 +121,7 @@ def prior_optimization(dataset):
             hidden_dims, D = D, activation_fn=activation_fn, scaled_variance=True, device=device)
         mlp_reparam = mlp_reparam.to(device)
         # Perform optimization
-        mapper = PriorOptimisationMapper(out_dir=saved_dir, device=device, gp = gp).to(device)
+        mapper = PriorOptimisationMapper(out_dir=saved_dir, device=device, gp = gp, out_det=False).to(device)
         p_hist, loss_hist = mapper.optimize(mlp_reparam, rand_generator, output_dim=output_dim, **prior_opt_configurations)
         path = os.path.join(saved_dir, "loss_values.log")
         if not os.path.isfile(saved_dir):
@@ -134,23 +138,21 @@ def prior_optimization(dataset):
         pickle.dump(masks_list, f)
 
 
-# Here training / evaluation
 # SGHMC Hyper-parameters
 sampling_configs_ps = {
-    "batch_size": 16,            # Mini-batch size
-    "num_samples": 40,           # Total number of samples for each chain
-    "n_discarded": 10,           # Number of the first samples to be discared for each chain
-    "num_burn_in_steps": 2000,   # Number of burn-in steps, 2000 yields better MSE
-    "keep_every": 2000,          # Thinning interval
-    "lr": 0.02,                  # Step size
-    "num_chains": 4,             # Number of chains
-    "mdecay": 0.02,  #1          # Momentum coefficient
-    "print_every_n_samples": 5,  # After how many iterations an evaluation should be printed
-    "lambd": 2e-8,               # The lambda for encouraging sparsity in the deterministic weights
-    "train_det_before": 750      # How many iterations the deterministic weights should be trained prior to sampling from the posterior
+    "batch_size": 32,
+    "num_samples": 40,
+    "n_discarded": 10,
+    "num_burn_in_steps": 2000,
+    "keep_every": 2000,
+    "lr": 0.01,
+    "num_chains": 4,
+    "mdecay": 0.01,
+    "print_every_n_samples": 20
 }
 
-def train(dataset):
+def train(train_det, lam, train_steps):
+    dataset = "crop"
     n_splits, n_units, out_dir = setup(dataset)
     # Load the masks
     with open(os.path.join(out_dir, "masks_list.pkl"), "rb") as f:
@@ -165,46 +167,79 @@ def train(dataset):
         # Load the dataset
         X_train, y_train, X_test, y_test = util.load_uci_data(
                 data_dir, split_id, dataset)
+        X_train_, y_train_, X_test_, y_test_, y_mean, y_std = normalize_data(
+                X_train, y_train, X_test, y_test)
         input_dim, output_dim = int(X_train.shape[-1]), 1
         # Initialize the neural network and likelihood modules
-        weight_mask, bias_mask = masks_list[split_id]
-        net = MLPMasked(input_dim, output_dim, [n_units] * n_hidden, activation_fn, weight_mask, 
-                        bias_mask, D = D, device = device)
+        # Load the optimized prior for the MLP
+        ckpt_path = os.path.join(out_dir, str(split_id), "ckpts", "it-{}.ckpt".format(num_iters))
+        checkpoint = torch.load(ckpt_path)
+        W_std_list = []
+        b_std_list = []
+        W_std_out = 1
+        b_std_out = 1
+        for key, value in checkpoint.items():
+            if key == "out_b_standdev":
+                b_std_out = value
+            elif key == "out_W_standdev":
+                W_std_out = value
+            elif "W_std" in key:
+                W_std_list.append(value)
+            elif "b_std" in key:
+                b_std_list.append(value)
+        weight_masks, bias_masks = masks_list[split_id]
+        net = MLPMasked(input_dim, output_dim, [n_units] * n_hidden, activation_fn, weight_masks, bias_masks, D = D, 
+                        prior_W_std_list = W_std_list, prior_b_std_list = b_std_list, 
+                        W_std_out = W_std_out, b_std_out = b_std_out, device = device)
         net = net.to(device)
         likelihood = LikGaussian(noise_var)
         
         # Load the optimized prior
-        ckpt_path = os.path.join(out_dir, str(split_id), "ckpts", "ps-it-{}.ckpt".format(prior_opt_configurations["num_iters"]))
         prior = OptimGaussianPrior(ckpt_path)
         
         # Initialize bayesian neural network with SGHMC sampler
         saved_dir = os.path.join(out_dir, str(split_id))
-        bayes_net = RegressionNetMasked(net, likelihood, prior, saved_dir, n_gpu=n_gpu)
-        
+        bayes_net = RegressionNetMasked(net = net, likelihood=likelihood, prior=prior, ckpt_dir= saved_dir, n_gpu=n_gpu)
+        #Add additional information to the dictinoary
+        sampling_configs_ps["lambd"]= lam
+        sampling_configs_ps["train_det"] = train_det
+        sampling_configs_ps["det_train_steps"] = train_steps
+  
         # Start sampling
-        # try out sam = True as well
-        bayes_net.sample_multi_chains(X_train, y_train, **sampling_configs_ps)
-        pred_mean, pred_var, preds, raw_preds = bayes_net.predict(X_test, True, True)
+        bayes_net.sample_multi_chains(X_train_, y_train_, **sampling_configs_ps)
+        pred_mean, pred_var, preds, raw_preds = bayes_net.predict(X_test_, True, True)
         r_hat = compute_rhat_regression(raw_preds, sampling_configs_ps["num_chains"])
         print("R-hat: mean {:.4f} std {:.4f}".format(float(r_hat.mean()), float(r_hat.std())))
 
-        rmse = uncertainty_metrics.rmse(pred_mean, y_test)
-        nll = uncertainty_metrics.gaussian_nll(y_test, pred_mean, pred_var)
+        rmse = uncertainty_metrics.rmse(pred_mean, y_test_)
+        nll = uncertainty_metrics.gaussian_nll(y_test_, pred_mean, pred_var)
         print("> RMSE = {:.4f} | NLL = {:.4f}".format(rmse, nll))
         results['rmse'].append(rmse)
         results['nll'].append(nll)
         result_df = pd.DataFrame(results)
-        result_df.to_csv(os.path.join(out_dir, "optim_results.csv"), sep="\t", index=False)
+    result_df.to_csv(os.path.join(out_dir, f"optim_results_{train_det}.csv"), sep="\t", index=False)
+    print("Final results")
+    print("> RMSE: mean {:.4e} $\pm$ {:.4e} | NLL: mean {:.4e} $\pm$ {:.4e}".format(
+            float(result_df['rmse'].mean()), float(result_df['rmse'].std()),
+            float(result_df['nll'].mean()), float(result_df['nll'].std())))
 
-def run(dataset):
-    prior_optimization(dataset)
-    train(dataset)
+def run(train_det, lam, lambd, train_steps):
+    prior_optimization(lambd)
+    train(train_det, lam, train_steps)
 
 
-def run_training_only(dataset):
-    train(dataset)
+def run_training_only(train_det, lam, train_steps):
+    train(train_det, lam, train_steps)
 
+def help():
+    lambd_list =[(torch.tensor([5., 2., 2.])/D).to(device),
+                 (torch.tensor([2., 5., 2.])/D).to(device),
+                 (torch.tensor([2., 2., 5.])/D).to(device)]
+    for i, lambd in enumerate(lambd_list):
+        if i < 2:
+            continue
+        print (f"Lambda is {lambd} steps")
+        run("during", 2e-8, lambd, i)
 def main():
-    fire.Fire(run)
-
+    fire.Fire(help)
 main()

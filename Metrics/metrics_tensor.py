@@ -1,9 +1,10 @@
-"""A PyTorch implementation of evaluation metrics."""
-
 import numpy as np
 import torch
 
-
+"""
+This is taken from Tran et al. 2022
+A PyTorch implementation of evaluation metrics
+"""
 def nll_gaussian(output, target, sigma, no_dim=1):
     """Computes the negative log-likelihood of Deep Ensembles for regerssion
         tasks.

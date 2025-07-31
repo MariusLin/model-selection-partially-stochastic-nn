@@ -10,7 +10,9 @@ from pathlib import Path
 from itertools import repeat
 from collections import OrderedDict
 
-
+"""
+This is taken from Tran et al. 2022
+"""
 def load_uci_data(uci_dir, split_id, name, version="original"):
     """Load a split of a UCI dataset.
 
@@ -27,10 +29,9 @@ def load_uci_data(uci_dir, split_id, name, version="original"):
         x_test: numpy array, the test data points.
         y_test: numpy array, the test labels.
     """
-    datasets = ["boston", "drybean", "credit", "maternalhealth",
-                "obesity", "onlineshoppers", "steel", "htru2", "sepsis",
-                "concrete", "redwine", "whitewine", "song",
-                "hourbikesharing", "daybikesharing", "realetsate", "onlinenews"]
+    datasets = ["concrete", "hourbikesharing", "banknote", "drybean", 
+                "maternalhealth", "obesity", "steel", "htru2", "pedalme",
+                "daygold", "crop", "usedcar"]
     if not(name in datasets):
         raise ValueError("Invalid dataset name.")
     assert version in ["original", "gap"]
@@ -51,7 +52,6 @@ def load_uci_data(uci_dir, split_id, name, version="original"):
     x_test, y_test = x[idx_test, :], y[idx_test]
 
     return x_train, y_train, x_test, y_test
-
 
 def prepare_device(n_gpu_use):
     """Setup GPU device if available, move model into configured device.

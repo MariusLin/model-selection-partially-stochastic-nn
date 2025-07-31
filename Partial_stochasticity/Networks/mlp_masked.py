@@ -7,7 +7,10 @@ from Utilities.activation_functions import *
 from Partial_stochasticity.Layers.masked_linear import MaskedLinear
 from Partial_stochasticity.Layers.factorized_linear import FactorizedLinear
 
-
+"""
+This is a normal MLP with masked layers to split deterministic and stochastic weights
+True means deterministic and false means stochastic
+"""
 def init_norm_layer(input_dim, norm_layer):
     if norm_layer == "batchnorm":
         return nn.BatchNorm1d(input_dim, eps=0, momentum=None,
@@ -15,24 +18,10 @@ def init_norm_layer(input_dim, norm_layer):
     elif norm_layer is None:
         return nn.Identity()
 
-
 class MLPMasked(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims, activation_fn, weight_masks, bias_masks, D, 
-                 W_std = None, b_std = None, scaled_variance=True, norm_layer=None, task="regression", device = "cpu"):
-        """Initialization.
-
-        Args:
-            input_dim: int, the size of the input data.
-            output_dim: int, the size of the output data.
-            hidden_dims: list of int, the list containing the size of
-                hidden layers.
-            activation_fn: str, the name of activation function to be used
-                in the network.
-            norm_layer: str, the type of normaliztion layer applied after
-                each layer
-            task: string, the type of task, it should be either `regression`
-                or `classification`.
-        """
+                 prior_W_std_list = [],  prior_b_std_list = [], W_std = None, b_std = None, W_std_out = None, 
+                 b_std_out = None, scaled_variance=True, norm_layer=None, task="regression", device = "cpu"):
         super(MLPMasked, self).__init__()
 
         self.input_dim = input_dim
@@ -43,6 +32,8 @@ class MLPMasked(nn.Module):
         self.weight_masks = weight_masks
         self.bias_masks = bias_masks
         self.device = device
+        self.prior_W_std_list = prior_W_std_list
+        self.prior_b_std_list = prior_b_std_list
 
         # Setup activation function
         options = {'cos': torch.cos, 'tanh': torch.tanh, 'relu': F.relu,
@@ -56,19 +47,19 @@ class MLPMasked(nn.Module):
 
         self.layers = nn.ModuleList([MaskedLinear(
             input_dim, hidden_dims[0], self.bias_masks[0], self.weight_masks[0], D = D, W_std = W_std, b_std = b_std, 
-            scaled_variance=scaled_variance, device = self.device)])
+            prior_b_std=self.prior_b_std_list[0], prior_W_std=self.prior_W_std_list[0] , scaled_variance=scaled_variance, device = self.device)])
         self.norm_layers = nn.ModuleList([init_norm_layer(
             hidden_dims[0], self.norm_layer)])
         for i in range(1, len(hidden_dims)):
             self.layers.add_module(
                 "linear_{}".format(i), MaskedLinear(hidden_dims[i-1], hidden_dims[i], self.bias_masks[i],
                 self.weight_masks[i], D = D, W_std = W_std, b_std = b_std, scaled_variance=scaled_variance, 
-                device=self.device))
+                prior_b_std=self.prior_b_std_list[i], prior_W_std=self.prior_W_std_list[i], device=self.device))
             self.norm_layers.add_module(
                 "norm_{}".format(i), init_norm_layer(hidden_dims[i],
                                                      self.norm_layer))
-        self.output_layer = FactorizedLinear(hidden_dims[-1], output_dim, D= D, W_std=W_std, b_std=b_std,
-                                   scaled_variance=scaled_variance, device = self.device)
+        self.output_layer = FactorizedLinear(hidden_dims[-1], output_dim, D = D, W_std = W_std_out, 
+                        b_std = b_std_out, scaled_variance=scaled_variance, device=self.device)
 
     def reset_parameters(self):
         for m in self.modules():
@@ -149,15 +140,16 @@ class MLPMasked(nn.Module):
         return X
     
     def get_nums_pruned(self):
+        """
+        This iterates through all layers and determines the number of pruned weights
+        """
         num_pruned_stoch = 0
         num_pruned_det = 0
-        for layer in self.layers:
+        for layer in self.layers + [self.output_layer]:
             nums_pruned_W = layer.get_nums_pruned_W()
             nums_pruned_b = layer.get_nums_pruned_b()
             num_pruned_stoch += nums_pruned_W[0]
             num_pruned_stoch += nums_pruned_b[0]
             num_pruned_det += nums_pruned_W[1]
             num_pruned_det += nums_pruned_b[1]
-        num_pruned_det += self.output_layer.get_num_pruned_W()
-        num_pruned_det += self.output_layer.get_num_pruned_b()
         return num_pruned_stoch, num_pruned_det

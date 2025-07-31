@@ -1,9 +1,0 @@
-1:boston
-2:concrete
-3:redwine
-4:whitewine
-5:song
-6:hourbikesharing
-7:daybikesharing
-8:realetsate
-9:onlinenews

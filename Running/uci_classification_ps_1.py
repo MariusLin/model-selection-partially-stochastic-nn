@@ -5,23 +5,27 @@ import numpy as np
 import math
 import fire
 import os
+import torch.utils.data as data_utils
 
 os.chdir("..")
+print ("Running classififcation where the first layer is stochastic and the remaining ones are deterministic")
 
 from Prior_optimization.gpr import GPR
-from Prior_optimization import kernels, mean_functions, priors
-from Full_stochasticity.Networks.gaussian_reparam_mlp import GaussianMLPReparameterization
-from Full_stochasticity.Networks.mlp import MLP
-from Samplers.likelihoods import LikGaussian
+from Prior_optimization import kernels, mean_functions
+from Partial_stochasticity.Networks.gaussian_reparam_mlp import GaussianMLPReparameterization
+from Partial_stochasticity.Networks.mlp_fs_stoch import StochMLP
+from Samplers.likelihoods import LikCategorical
 from Prior_optimization.priors import OptimGaussianPrior
 from Prior_optimization.wasserstein_mapper import MapperWasserstein
 from Utilities.rand_generators import MeasureSetGenerator
 from Utilities.normalization import normalize_data
 from Utilities.exp_utils import get_input_range
-from Metrics.sampling import compute_rhat_regression
-from Metrics import uncertainty as uncertainty_metrics
-from Full_stochasticity.Networks.regression_net import RegressionNet
+from Metrics.sampling import compute_rhat_classification
+from Partial_stochasticity.Networks.classification_net_masked import ClassificationNetMasked
 from Utilities import util
+from Utilities.priors import LogNormal
+import Metrics.metrics_tensor as metrics_classification
+import Metrics.uncertainty as uncertainty_metrics
 
 SEED = 123
 util.set_seed(SEED)
@@ -54,13 +58,10 @@ lr = 0.05        # The learning rate
 n_samples = 128  # The mini-batch size
 # setup depending on dataset
 def setup(dataset):
-    if dataset == "protein":
-        n_splits = 5
-        n_units = 200
-    else:
-        n_splits = 10
-        n_units = 100
-    out_dir = f"./exp/uci/{dataset}/fully_stochastic"
+    print (dataset)
+    n_splits = 10
+    n_units = 100
+    out_dir = f"./exp/uci/{dataset}/first_layer_stochastic"
     util.ensure_dir(out_dir)
     return n_splits, n_units, out_dir
 
@@ -85,7 +86,6 @@ def dataset_settings(dataset):
         num_classes = 2 
     return num_classes 
 
-# Here prior optimization
 def prior_optimization(dataset):
     n_splits, n_units, out_dir = setup(dataset)
     num_classes = dataset_settings(dataset)
@@ -97,6 +97,8 @@ def prior_optimization(dataset):
                 data_dir, split_id, dataset)
         X_train_, y_train_, X_test_, y_test_, y_mean, y_std = normalize_data(
                 X_train, y_train, X_test, y_test)
+        y_train = y_train.astype(int)
+        y_test = y_test.astype(int)
         x_min, x_max = get_input_range(X_train_, X_test_)
         input_dim, output_dim = int(X_train.shape[-1]), 1
         
@@ -105,7 +107,6 @@ def prior_optimization(dataset):
         
         # Initialize the mean and covariance function of the target hierarchical GP prior
         mean = mean_functions.Zero()
-        
         lengthscale = math.sqrt(2. * input_dim)
         variance = 1.
         kernel = kernels.RBF(input_dim=input_dim,
@@ -113,15 +114,16 @@ def prior_optimization(dataset):
                             variance=torch.tensor([variance], dtype=torch.double), ARD=True)
 
         # Place hyper-priors on lengthscales and variances
-        kernel.lengthscales.prior = priors.LogNormal(
+        kernel.lengthscales.prior = LogNormal(
                 torch.ones([input_dim]) * math.log(lengthscale),
                 torch.ones([input_dim]) * 1.)
-        kernel.variance.prior = priors.LogNormal(
+        kernel.variance.prior = LogNormal(
                 torch.ones([1]) * 0.1,
                 torch.ones([1]) * 1.)
             
         # Initialize the GP model
-        gp = GPR(X=torch.from_numpy(X_train_), Y=util.to_one_hot(torch.from_numpy(y_train_), num_classes).reshape([-1, 1]),
+        gp = GPR(X=torch.from_numpy(X_train_), Y=util.to_one_hot(torch.from_numpy(y_train),
+                                                                 num_classes).reshape([-1, 1]),
                 kern=kernel, mean_function=mean)
         
         # Initialize tunable MLP prior
@@ -142,8 +144,6 @@ def prior_optimization(dataset):
         np.savetxt(path, w_hist, fmt='%.6e')
         print("----" * 20)
 
-# Here training / evaluation
-
 # Configure the SGHMC sampler
 sampling_configs = {
     "batch_size": 32,
@@ -158,7 +158,8 @@ sampling_configs = {
 }
 def train(dataset):
     n_splits, n_units, out_dir = setup(dataset)
-    results = {"rmse": [], "nll": []}
+    num_classes = dataset_settings(dataset)
+    results = {"acc": [], "nll": []}
     for split_id in range(n_splits):
         print("Loading split {} of {} dataset".format(split_id, dataset))
         saved_dir = os.path.join(out_dir, str(split_id))
@@ -166,11 +167,19 @@ def train(dataset):
         # Load the dataset
         X_train, y_train, X_test, y_test = util.load_uci_data(
                 data_dir, split_id, dataset)
-        input_dim, output_dim = int(X_train.shape[-1]), 1
+        input_dim = int(X_train.shape[-1])
+        X_train = torch.from_numpy(X_train).float()
+        y_train = torch.from_numpy(y_train).long()
+        X_test = torch.from_numpy(X_test).float()
+        y_test = torch.from_numpy(y_test).long()
+        data_loader = data_utils.DataLoader(
+            data_utils.TensorDataset(X_train, y_train),
+            batch_size=sampling_configs["batch_size"], shuffle=True)
         
         # Initialize the neural network and likelihood modules
-        net = MLP(input_dim, output_dim, [n_units] * n_hidden, activation_fn)
-        likelihood = LikGaussian(noise_var)
+        net = StochMLP(input_dim, num_classes, [n_units] * n_hidden, activation_fn, task = "classification")
+        net = net.to(device)
+        likelihood = LikCategorical()
         
         # Load the optimized prior
         ckpt_path = os.path.join(out_dir, str(split_id), "ckpts", "it-{}.ckpt".format(num_iters))
@@ -178,38 +187,39 @@ def train(dataset):
         
         # Initialize bayesian neural network with SGHMC sampler
         saved_dir = os.path.join(out_dir, str(split_id))
-        bayes_net = RegressionNet(net, likelihood, prior, saved_dir, n_gpu=0)
+        bayes_net = ClassificationNetMasked(net, likelihood, prior, saved_dir, n_gpu=n_gpu)
         
         # Start sampling
-        bayes_net.sample_multi_chains(X_train, y_train, **sampling_configs)
-        pred_mean, pred_var, preds, raw_preds = bayes_net.predict(X_test, True, True)
-        r_hat = compute_rhat_regression(raw_preds, sampling_configs["num_chains"])
+        bayes_net.sample_multi_chains(data_loader= data_loader, **sampling_configs)
+        pred_mean, raw_preds = bayes_net.predict(X_test, True, True)
+        p = raw_preds.cpu().numpy()
+        p_mean = pred_mean.cpu().numpy()
+        r_hat = compute_rhat_classification(p, sampling_configs["num_chains"])
         print("R-hat: mean {:.4f} std {:.4f}".format(float(r_hat.mean()), float(r_hat.std())))
 
-        rmse = uncertainty_metrics.rmse(pred_mean, y_test)
-        nll = uncertainty_metrics.gaussian_nll(y_test, pred_mean, pred_var)
-        print("> RMSE = {:.4f} | NLL = {:.4f}".format(rmse, nll))
-        results['rmse'].append(rmse)
-        results['nll'].append(nll)
-
+        acc = uncertainty_metrics.accuracy(p_mean, y_test)
+        nll = metrics_classification.nll(pred_mean, y_test)
+        print("> Accuracy = {:.4f} | NLL = {:.4f}".format(acc, nll))
+        results['acc'].append(acc.cpu().item() if torch.is_tensor(acc) else acc)
+        results['nll'].append(nll.cpu().item() if torch.is_tensor(nll) else nll)
 
         result_df = pd.DataFrame(results)
     result_df.to_csv(os.path.join(out_dir, "optim_results.csv"), sep="\t", index=False)
 
     print("Final results")
-    print("> RMSE: mean {:.4e}; std {:.4e} | NLL: mean {:.4e} std {:.4e}".format(
-            float(result_df['rmse'].mean()), float(result_df['rmse'].std()),
+    print("> Accuracy: mean {:.4e} $\pm$ {:.4e} | NLL: mean {:.4e} $\pm$ {:.4e}".format(
+            float(result_df['acc'].mean()), float(result_df['acc'].std()),
             float(result_df['nll'].mean()), float(result_df['nll'].std())))
 
 def run(dataset):
     prior_optimization(dataset)
     train(dataset)
-# everything in one function where only calling with different arguments
 
 def run_training_only(dataset):
     train(dataset)
 
 def main():
-    fire.Fire(run)
+    #fire.Fire(run)
+    fire.Fire(run_training_only)
 
 main()

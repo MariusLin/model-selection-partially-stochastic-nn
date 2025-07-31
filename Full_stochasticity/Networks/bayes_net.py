@@ -1,5 +1,3 @@
-"""Define a base class of Bayesian Neural Network."""
-
 import glob
 import os
 import copy
@@ -14,7 +12,10 @@ from Samplers.adaptive_sghmc import AdaptiveSGHMC
 from Samplers.sghmc import SGHMC
 from Utilities.util import inf_loop, ensure_dir, prepare_device
 
-
+"""
+This is taken from Tran et al. 2022
+It defined a base class of a Bayesian neural network
+"""
 class BayesNet:
     def __init__(self, net, likelihood, prior, ckpt_dir, temperature=1.0,
                  sampling_method="adaptive_sghmc",
@@ -302,10 +303,10 @@ class BayesNet:
 
             # Initialize a data loader for training data.
             train_loader = inf_loop(
-                data_utils.DataLoader(
-                    data_utils.TensorDataset(x_train_, y_train_),
-                    batch_size=batch_size,
-                    shuffle=True))
+                    data_utils.DataLoader(
+                        data_utils.TensorDataset(x_train_, y_train_),
+                        batch_size=batch_size,
+                        shuffle=True))
 
         # Estimate the number of update steps
         num_steps = 0 if num_samples is None else (num_samples+1) * keep_every
@@ -326,16 +327,16 @@ class BayesNet:
         self.net.train()
         n_samples = 0 # used to discard first samples
         for step, (x_batch, y_batch) in batch_generator:
-            x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
+            x_batch = x_batch.to(self.device).float()
+            y_batch =  y_batch.to(self.device)
             if self.task == "regression":
                 x_batch = x_batch.view(y_batch.shape[0], -1)
                 y_batch = y_batch.view(-1, 1)
-
             # Forward pass
             if self.task == "regression":
-                fx_batch = self.net(x_batch).view(-1, 1)
+                fx_batch = self.net(x_batch).view(-1, 1).to(self.device)
             elif self.task == "classification":
-                fx_batch = self.net(x_batch, log_softmax=True)
+                fx_batch = self.net(x_batch, log_softmax=True).to(self.device)
 
             self.sampler.zero_grad()
             # Calculate the negative log joint density
@@ -371,9 +372,15 @@ class BayesNet:
                     if self.num_samples % print_every_n_samples == 0:
                         self.net.eval()
                         if (x_train is not None) and (y_train is not None):
-                            self._print_evaluations(x_train, y_train, True)
+                            if self.task == "classification":
+                                self._print_evaluations(x_train, y_train.long(), True)
+                            else:
+                                self._print_evaluations(x_train, y_train, True)
                         else:
-                            self._print_evaluations(x_batch, y_batch, True)
+                            if self.task == "classification":
+                                self._print_evaluations(x_batch, y_batch.long(), True)
+                            else:
+                                self._print_evaluations(x_batch, y_batch, True)
                         self.net.train()
 
     def _save_checkpoint(self, mode="best"):

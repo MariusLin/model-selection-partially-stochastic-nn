@@ -1,5 +1,3 @@
-"""Define a base class of Bayesian Neural Network."""
-
 import glob
 import os
 import copy
@@ -14,29 +12,19 @@ from Samplers.adaptive_sghmc import AdaptiveSGHMC
 from Samplers.sghmc import SGHMC
 from torch.optim import Adam
 from Utilities.util import inf_loop, ensure_dir, prepare_device
-from Utilities.sam import SAM
 
+"""
+Define a base class of Bayesian Neural Network with masks to split deterministic and stochastic weights
+True means that the parameter is deterministic and false that it is stochsatic
+"""
 class BayesNetMasked:
     def __init__(self, net, likelihood, prior, ckpt_dir, temperature=1.0,
                  sampling_method="adaptive_sghmc",
                  weights_format="state_dict", task="regression",
-                 logger=None, n_gpu=0):
+                 logger=None, n_gpu=0, out_det = True):
         """
         Bayesian Neural Networks use uses stochastic gradient MCMC methods
             to sample from the posterior distribution.
-
-        Args:
-            net: instance of nn.Module, the base neural net.
-            likelihood: instance of LikelihoodModule, the module of likelihood.
-            temperature: float, temperature in the posterior.
-            prior: instance of PriorModule, the module of prior.
-            ckpt_dir: str, path to the directory of checkpoints.
-            sampling_method: specifies the sampling strategy.
-            weights_format: str, the format of sampled weights; possible
-                values: state_dict, tuple.
-            task: str, the type of task, which is either `classification`,
-                or `regression`.
-            logger: instance of logging.Logger.
         """
         self.net = net
         self.lik_module = likelihood
@@ -47,6 +35,7 @@ class BayesNetMasked:
         self.weights_format = weights_format
         self.task = task
         self.n_gpu = n_gpu
+        self.out_det = out_det
 
         self.temperature = temperature
 
@@ -209,7 +198,7 @@ class BayesNetMasked:
                             lr=1e-2, batch_size=32,
                             epsilon=1e-10, mdecay=0.05,
                             print_every_n_samples=10,
-                            lambd = 0.5, train_det_before = None):
+                            lambd = 0.5, train_det = "during", det_train_steps = 1000):
         """
         Use multiple chains of sampling.
 
@@ -239,36 +228,145 @@ class BayesNetMasked:
                 from the last training run.
             resample_prior_every: int, num ber of sampling steps to perform
                 before resampling prior.
+            lambd: int, the penalization scalar for the deterministic weights
+            train_det: String in ["before", "during", "after"]: Decides when the deterministic
+                       weights should be trained
+            det_train_steps: int, number of training steps for the deterministic weights
         """
+        # Setup data loader
+        if data_loader is not None:
+            num_datapoints = len(data_loader.sampler)
+            train_loader = inf_loop(data_loader)
+        else:
+            num_datapoints = x_train.shape[0]
+            if self.task == "regression":
+                # Normalize the dataset
+                x_train, y_train = x_train.squeeze(), y_train.squeeze()
+                x_train_, y_train_ = self._normalize_data(x_train, y_train)
+
+            # Initialize a data loader for training data.
+            train_loader = inf_loop(
+                    data_utils.DataLoader(
+                        data_utils.TensorDataset(x_train_, y_train_),
+                        batch_size=batch_size,
+                        shuffle=True, 
+                        pin_memory=True))
+
+        # Estimate the number of update steps
+        num_steps = 0 if num_samples is None else (num_samples+1) * keep_every
+        # Extract the omega parameters, the stochastic parameters and the deterministic parameters
+        stoch_params = []
+        omega_params = []
+        det_params = []
+        for layer in self.net.layers:
+            if isinstance(layer, nn.Sequential):
+                for l in layer:
+                    for name, param in l.named_parameters():
+                        # Filter between stochastic and deterministic parameters
+                        if "omega" in name:
+                            omega_params.append(param)
+                        elif "stoch" in name:
+                            stoch_params.append(param)
+                        else:
+                            det_params.append(param)
+            else:
+                for name, param in layer.named_parameters():
+                    # Filter between stochastic and deterministic parameters
+                    if "omega" in name:
+                        omega_params.append(param)
+                    elif "stoch" in name:
+                        stoch_params.append(param)
+                    else:
+                        det_params.append(param)
+        # The output layer is deterministic by default
+        for name, param in self.net.output_layer.named_parameters():
+            if "omega" in name:
+                omega_params.append(param)
+            # Only if the output layer is not deterministic
+            elif "stoch" in name and not self.out_det:
+                stoch_params.append(param)
+            else:
+                det_params.append(param)
+
+        self.net = self.net.float()
+        num_steps += num_burn_in_steps
+        deterministic_optimizer = Adam(omega_params + det_params, lr = lr)
+        # Train the deterministic weights before sampling from the posterior
+        if train_det == "before":
+            self.net.train()
+            batch_generator_det_training = islice(enumerate(train_loader), det_train_steps)
+            for _, (x_batch, y_batch) in batch_generator_det_training:
+                deterministic_optimizer.zero_grad()
+                x_batch = x_batch.to(self.device).float()
+                y_batch = y_batch.to(self.device)
+                if self.task == "regression":
+                    x_batch = x_batch.view(y_batch.shape[0], -1)
+                    y_batch = y_batch.view(-1, 1)
+                # Deterministic training 
+                det_loss_fn = nn.MSELoss() if self.task == "regression" else nn.CrossEntropyLoss()
+                fx_batch = self.net(x_batch).view(-1, 1) if self.task == "regression" else self.net(x_batch, log_softmax=True)
+                if self.task == "regression":
+                    det_loss = det_loss_fn(fx_batch.float(), y_batch.float())
+                else:
+                    det_loss = det_loss_fn(fx_batch.float(), y_batch)
+                regularization = sum((param ** 2).sum() for param in omega_params) * lambd
+                det_loss += regularization
+                det_loss.backward()
+                deterministic_optimizer.step()
         for chain in range(num_chains):
             self.print_info("Chain: {}".format(chain+1))
             self.net.reset_parameters()
-            self.train(x_train, y_train, data_loader, num_samples, keep_every,
-                       n_discarded, num_burn_in_steps,
-                       lr, batch_size, epsilon, mdecay,
-                       print_every_n_samples, continue_training=False,
+            # Sample from the posterior
+            self.train(x_train = x_train, y_train = y_train,train_loader=train_loader, num_datapoints=num_datapoints, 
+                       keep_every=keep_every, n_discarded=n_discarded, num_burn_in_steps=num_burn_in_steps,
+                       lr=lr, epsilon = epsilon, mdecay = mdecay, print_every_n_samples=print_every_n_samples, 
+                       num_steps=num_steps, continue_training=False,
                        clear_sampled_weights=False,
-                       lambd = lambd, train_det_before = train_det_before)
+                       lambd = lambd, train_det = train_det, omega_params = omega_params,
+                       stoch_params = stoch_params, det_params=det_params)
             if self.task == "classification":
                 self._save_sampled_weights()
                 self.sampled_weights.clear()
                 self._save_checkpoint(mode="last")
+        # Train the deterministic weights after sampling from the posterior
+        if train_det == "after":
+            self.net.train()
+            batch_generator_det_training = islice(enumerate(train_loader), det_train_steps)
+            for _, (x_batch, y_batch) in batch_generator_det_training:
+                deterministic_optimizer.zero_grad()
+                x_batch = x_batch.to(self.device).float()
+                y_batch = y_batch.to(self.device)
+                if self.task == "regression":
+                    x_batch = x_batch.view(y_batch.shape[0], -1)
+                    y_batch = y_batch.view(-1, 1)
+                # Deterministic training 
+                det_loss_fn = nn.MSELoss() if self.task == "regression" else nn.CrossEntropyLoss()
+                fx_batch = self.net(x_batch).view(-1, 1) if self.task == "regression" else self.net(x_batch, log_softmax=True)
+                if self.task == "regression":
+                    det_loss = det_loss_fn(fx_batch.float(), y_batch.float())
+                else:
+                    det_loss = det_loss_fn(fx_batch.float(), y_batch)
+                regularization = sum((param ** 2).sum() for param in omega_params) * lambd
+                det_loss += regularization
+                det_loss.backward()
+                deterministic_optimizer.step()
 
-    def train(self, x_train=None, y_train=None, data_loader=None,
-              num_samples=None, keep_every=100, n_discarded=0,
-              num_burn_in_steps=3000, lr=1e-2, batch_size=32, epsilon=1e-10,
-              mdecay=0.05, print_every_n_samples=10, continue_training=False,
-              clear_sampled_weights=True, lambd = 0.5, train_det_before = None):
+    def train(self, x_train=None, y_train=None, train_loader=None,
+              num_datapoints = None, keep_every=100, n_discarded=0,
+              num_burn_in_steps=3000, lr=1e-2, epsilon=1e-10,
+              mdecay=0.05, print_every_n_samples=10, num_steps = None, continue_training=False,
+              clear_sampled_weights=True, lambd = 0.5, train_det = "during", omega_params = [],
+              stoch_params = [], det_params = []):
         """
         Train a BNN using a given dataset.
 
         Args:
             x_train: numpy array, input training datapoints.
             y_train: numpy array, input training targets.
-            data_loader: instance of DataLoader, the dataloader for training
+            train_loader: instance of DataLoader, the dataloader for training
                 data. Notice that we have to choose either numpy arrays or
                 dataloader for the input data.
-            num_samples: int, number of set of parameters we want to sample.
+            num_datapoints: int, number of set of parameters we want to sample.
             keep_every: number of sampling steps (after burn-in) to perform
                 before keeping a sample.
             n_discarded: int, the number of first samples will
@@ -286,46 +384,13 @@ class BayesNetMasked:
                 from the last training run.
             clear_sampled_weights: bool, indicates whether we want to clear
                 the sampled weights in the case of continuing the training.
-            resample_prior_every: int, num ber of sampling steps to perform
-                before resampling prior.
+            lambd: int, penalization scalar for the deterministic weights
+            train_det: String in ["before", "during", "after"]: Decides when the deterministic
+                       weights should be trained
+            omega_params: List<params>, the deterministic omega parameters
+            stoch_params: List<params>, the stochastic parameters
+            det_params: List<params>, the deterministic parameters
         """
-        # Make efficient use of GPU
-        if torch.cuda.is_available():
-            self.net = torch.compile(self.net)
-        # Setup data loader
-        if data_loader is not None:
-            num_datapoints = len(data_loader.sampler)
-            train_loader = inf_loop(data_loader)
-        else:
-            num_datapoints = x_train.shape[0]
-            if self.task == "regression":
-                # Normalize the dataset
-                x_train, y_train = x_train.squeeze(), y_train.squeeze()
-                x_train_, y_train_ = self._normalize_data(x_train, y_train)
-
-            # Initialize a data loader for training data.
-            train_loader = inf_loop(
-                data_utils.DataLoader(
-                    data_utils.TensorDataset(x_train_, y_train_),
-                    batch_size=batch_size,
-                    shuffle=True, 
-                    pin_memory=True))
-
-        # Estimate the number of update steps
-        num_steps = 0 if num_samples is None else (num_samples+1) * keep_every
-        # Find the stochastic parameters and the deterministic parameters
-        stoch_params = []
-        omega_params = []
-        for layer in self.net.layers:
-            for name, param in layer.named_parameters():
-                # Filter between stochastic and deterministic parameters
-                if "det" in name:
-                    omega_params.append(param)
-                else:
-                    stoch_params.append(param)
-
-        # The output layer is deterministic by design
-        omega_params.extend(self.net.output_layer.parameters())
         # Initialize the sampler
         if not continue_training:
             if clear_sampled_weights:
@@ -337,63 +402,40 @@ class BayesNetMasked:
 
         # Initialize the batch generator
         batch_generator = islice(enumerate(train_loader), num_steps)
-        deterministic_optimizer = Adam(omega_params, lr = lr)
+        deterministic_optimizer = Adam(omega_params + det_params, lr = lr)
         # Start sampling
         self.net.train()
-        if train_det_before:
-            #Here SAM
-            #det_optimizer = SAM(self.net.parameters(), Adam, rho = 0.01, adaptive = False, lr = lr, betas = (0.5, 0.9))
-            batch_generator_det_training = islice(enumerate(train_loader), train_det_before)
-            for _, (x_batch, y_batch) in batch_generator_det_training:
-                deterministic_optimizer.zero_grad()
-                if self.task == "regression":
-                    x_batch = x_batch.view(y_batch.shape[0], -1)
-                    y_batch = y_batch.view(-1, 1)
-                # Deterministic training with SAM
-                det_loss_fn = nn.MSELoss() if self.task == "regression" else nn.CrossEntropyLoss()
-                with torch.autocast(device_type=self.device.type):
-                    fx_batch1 = self.net(x_batch).view(-1, 1) if self.task == "regression" else self.net(x_batch, log_softmax=True)
-                    det_loss1 = det_loss_fn(fx_batch1, y_batch)
-                det_loss1.backward()
-                deterministic_optimizer.step()
-                # det_optimizer.first_step(zero_grad=True)
-                # with torch.autocast(device_type=self.device.type):
-                #     fx_batch2 = self.net(x_batch).view(-1, 1) if self.task == "regression" else self.net(x_batch, log_softmax=True)
-                #     det_loss2 = det_loss_fn(fx_batch2, y_batch)
-                #     regularization = sum((param ** 2).sum() for param in omega_params) * lambd
-                #     det_loss2 += regularization
-                # det_loss2.backward()
-                # det_optimizer.second_step(zero_grad=True)
         n_samples = 0 # used to discard first samples
         for step, (x_batch, y_batch) in batch_generator:
             self.sampler.zero_grad()
-            x_batch = x_batch.to(self.device, non_blocking=True)
-            y_batch = y_batch.to(self.device, non_blocking=True)
+            x_batch = x_batch.to(self.device).float()
+            y_batch =  y_batch.to(self.device)
             if self.task == "regression":
                 x_batch = x_batch.view(y_batch.shape[0], -1)
                 y_batch = y_batch.view(-1, 1)
-            with torch.autocast(device_type=self.device.type):
-                if self.task == "regression":
-                    fx_batch = self.net(x_batch).view(-1, 1)
-                elif self.task == "classification":
-                    fx_batch = self.net(x_batch, log_softmax=True)
-                loss = self._neg_log_joint(fx_batch, y_batch, num_datapoints)
+            if self.task == "regression":
+                fx_batch = self.net(x_batch).view(-1, 1)
+            elif self.task == "classification":
+                fx_batch = self.net(x_batch, log_softmax=True).float()
+            loss = self._neg_log_joint(fx_batch, y_batch, num_datapoints)
             # Estimate the gradients
             loss.backward()
             torch.nn.utils.clip_grad_norm_(stoch_params, 100.)
             # Update parameters
             self.sampler.step()
-            if not train_det_before and self.step <= num_burn_in_steps: 
+            # Check whether the deterministic weights are trained during the sampling and the burn-in phase are over
+            if train_det == "during" and self.step > num_burn_in_steps: 
                 deterministic_optimizer.zero_grad()
                 # Deterministic training with SAM
                 det_loss_fn = nn.MSELoss() if self.task == "regression" else nn.CrossEntropyLoss()
-
-                with torch.autocast(device_type=self.device.type):
-                    fx_batch1 = self.net(x_batch).view(-1, 1) if self.task == "regression" else self.net(x_batch, log_softmax=True)
-                    det_loss1 = det_loss_fn(fx_batch1, y_batch)
-                    regularization = sum((param ** 2).sum() for param in omega_params) * lambd
-                    det_loss1 += regularization
-                det_loss1.backward()
+                fx_batch = self.net(x_batch).view(-1, 1) if self.task == "regression" else self.net(x_batch, log_softmax=True)
+                if self.task == "regression":
+                    det_loss = det_loss_fn(fx_batch.float(), y_batch.float())
+                else:
+                    det_loss = det_loss_fn(fx_batch.float(), y_batch)
+                regularization = sum((param ** 2).sum() for param in omega_params) * lambd
+                det_loss += regularization
+                det_loss.backward()
                 deterministic_optimizer.step()
 
             self.step += 1
@@ -409,14 +451,22 @@ class BayesNetMasked:
 
                     # Print evaluation on training data
                     if self.num_samples % print_every_n_samples == 0:
+                        num_pruned_det = 0
                         self.net.eval()
+                        # Get the number of pruned deterministic weights
                         if omega_params:
                             _, num_pruned_det = self.net.get_nums_pruned()
 
                         if (x_train is not None) and (y_train is not None):
-                            self._print_evaluations(x_train, y_train, True, num_pruned_det=num_pruned_det)
+                            if self.task == "classification":
+                                self._print_evaluations(x_train, y_train.long(), True, num_pruned_det=num_pruned_det)
+                            else:
+                                self._print_evaluations(x_train, y_train, True, num_pruned_det=num_pruned_det)
                         else:
-                            self._print_evaluations(x_batch, y_batch, True, num_pruned_det=num_pruned_det)
+                            if self.task == "classification":
+                                self._print_evaluations(x_batch, y_batch.long(), True, num_pruned_det=num_pruned_det)
+                            else:
+                                self._print_evaluations(x_batch, y_batch, True, num_pruned_det=num_pruned_det)
                         self.net.train()
 
     def _save_checkpoint(self, mode="best"):

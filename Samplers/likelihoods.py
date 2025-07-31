@@ -1,9 +1,10 @@
-"""Defines likelihood of some distributions."""
-
 import torch
 import torch.nn as nn
 
-
+"""
+This is taken from Tran et al. 2022
+Defines likelihood of some distributions
+"""
 class LikelihoodModule(nn.Module):
     def forward(self, fx, y):
         return -self.loglik(fx, y)

@@ -8,10 +8,14 @@ from Partial_stochasticity.Networks.bayes_net_masked import BayesNetMasked
 from Metrics.metrics_tensor import nll, accuracy
 from Utilities.util import get_all_data
 
-
+"""
+This is a slight adaptation from Tran et al. 2022
+It is a Classicication net with masks to split deterministic and stochastic weights
+True means that it is deterministic and false means stochastic
+"""
 class ClassificationNetMasked(BayesNetMasked):
     def __init__(self, net, likelihood, prior, ckpt_dir, temperature=1.0,
-                 sampling_method="adaptive_sghmc", logger=None, n_gpu=1):
+                 sampling_method="adaptive_sghmc", logger=None, n_gpu=1, out_det = True):
         """Bayesian Neural Networks for classification task.
 
         Args:
@@ -25,7 +29,7 @@ class ClassificationNetMasked(BayesNetMasked):
             n_gpu: int, the number of used GPUs.
         """
         BayesNetMasked.__init__(self, net, likelihood, prior, ckpt_dir, temperature,
-                          sampling_method, weights_format="state_dict",
+                          sampling_method, weights_format="state_dict", out_det=out_det,
                           task="classification", logger=logger, n_gpu=n_gpu)
 
     def train_and_evaluate(self, data_loader, valid_data_loader,

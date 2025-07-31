@@ -1,8 +1,8 @@
-"""
-Implements the algorithm D.1 from Kolb et al. 2025
-"""
-
 import torch
+
+"""
+It is an implementation of algorithm D.1 from Kolb et al. 2025
+"""
 
 def dwf_initialization(layer_sizes, sigma_w_list, D, epsilon, device='cpu'):
     """

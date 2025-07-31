@@ -4,7 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
+"""
+This is taken from Tran et al. 2022
+It is a linear layer with a reparameterized Gaussian prior on the parameteers
+"""
 class GaussianLinearReparameterization(nn.Module):
     def __init__(self, n_in, n_out, W_std=None,
                  b_std=None, scaled_variance=True, prior_per='layer'):

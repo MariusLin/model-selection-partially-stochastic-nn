@@ -1,5 +1,3 @@
-"""Bayesian Neural Network for regression."""
-
 import numpy as np
 import torch
 import copy
@@ -8,7 +6,10 @@ from Full_stochasticity.Networks.bayes_net import BayesNet
 from Utilities.normalization import zscore_normalization, zscore_unnormalization
 from Metrics.uncertainty import gaussian_nll, rmse
 
-
+"""
+This is taken from Tran et al. 2022
+It is a base class of a Bayesian neural network used for regression
+"""
 class RegressionNet(BayesNet):
     def __init__(self, net, likelihood, prior, ckpt_dir,
                  temperature=1.0, normalize_input=True,

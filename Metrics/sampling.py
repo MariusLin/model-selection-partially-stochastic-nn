@@ -1,5 +1,7 @@
 import numpy as np
-
+"""
+This is taken from Tran et al. 2022
+"""
 
 """Adapted from pymc library"""
 def gelman_rubin(x, return_var=False):

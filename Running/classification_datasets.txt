@@ -1,9 +1,0 @@
-1:banknote
-2:drybean
-3:credit
-4:maternalhealth
-5:obesity
-6:onlineshoppers
-7:steel
-8:htru2
-9:sepsis

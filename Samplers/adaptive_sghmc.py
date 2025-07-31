@@ -2,7 +2,6 @@ import torch
 
 from torch.optim import Optimizer
 
-
 class AdaptiveSGHMC(Optimizer):
     """ Stochastic Gradient Hamiltonian Monte-Carlo Sampler that uses a burn-in
         procedure to adapt its own hyperparameters during the initial stages
